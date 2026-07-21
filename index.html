@@ -237,7 +237,14 @@ const SUPPLEMENTS = [
 ];
 
 // ================= date helpers =================
-function toISO(d) { return d.toISOString().slice(0, 10); }
+function toISO(d) {
+  // Usa componentes de data LOCAIS (não toISOString/UTC), para evitar que a data
+  // "salte" um dia em fusos horários como Portugal no horário de verão (UTC+1).
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
 function startOfWeek(d) { const r = new Date(d); const day = (r.getDay() + 6) % 7; r.setDate(r.getDate() - day); r.setHours(0,0,0,0); return r; }
 function diffWeeks(a, b) { return Math.ceil((b - a) / (7 * 24 * 3600 * 1000)); }
@@ -318,11 +325,28 @@ function generatePlan(raceDateISO, todayISO) {
 }
 
 // ================= storage =================
+// Usa window.storage quando disponível (dentro do Claude), com fallback automático
+// para localStorage (quando a app é aberta como ficheiro standalone num browser).
+// Isto garante que os dados nunca se perdem ao sair/fechar a app.
+const __hasWindowStorage = typeof window !== "undefined" && !!window.storage;
+
 async function loadKey(key) {
-  try { const r = await window.storage.get(key, false); return r ? JSON.parse(r.value) : null; } catch { return null; }
+  if (__hasWindowStorage) {
+    try {
+      const r = await window.storage.get(key, false);
+      if (r) return JSON.parse(r.value);
+    } catch {}
+  }
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
 }
 async function saveKey(key, value) {
-  try { await window.storage.set(key, JSON.stringify(value), false); } catch {}
+  if (__hasWindowStorage) {
+    try { await window.storage.set(key, JSON.stringify(value), false); } catch {}
+  }
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
 // ================= state =================
@@ -341,6 +365,9 @@ let S = {
 let __registry = {};
 
 function sessionKey(s){ return s.date + "_" + s.discipline; }
+// Chave de override estável por dia — NÃO depende da disciplina, para que ao mudares
+// o tipo de dia (ex: descanso -> corrida) o override continue a ser encontrado.
+function overrideKeyFor(base){ return base.discipline === "extra" ? base.date + "_extra_slot" : base.date + "_slot"; }
 
 // Ajusta sessões futuras (ainda não registadas) com base no RPE recente registado —
 // esforço percebido alto reduz ligeiramente o volume seguinte, esforço baixo permite subir um pouco.
@@ -363,14 +390,14 @@ function computeAdaptiveFactor(logs) {
 // Combina a sessão planeada com qualquer edição manual (override) guardada pelo utilizador;
 // se não houver override e a sessão ainda for futura, aplica o fator adaptativo ao volume.
 function effectiveSession(base) {
-  const key = sessionKey(base);
+  const key = overrideKeyFor(base);
   const ov = S.overrides[key];
-  if (ov) return { ...base, ...ov, __overridden: true };
+  if (ov) return { ...base, ...ov, __overridden: true, __baseRef: base };
   if (base.discipline !== "rest" && new Date(base.date) > new Date(getToday())) {
     const factor = computeAdaptiveFactor(S.logs);
-    if (factor !== 1) return { ...base, duration: Math.max(10, Math.round(base.duration * factor)), __adaptive: factor };
+    if (factor !== 1) return { ...base, duration: Math.max(10, Math.round(base.duration * factor)), __adaptive: factor, __baseRef: base };
   }
-  return base;
+  return { ...base, __baseRef: base };
 }
 
 // ================= derived helpers =================
@@ -385,7 +412,7 @@ function sessionCardHTML(session, log) {
   const done = log && log.completed;
   __registry[sessionKey(session)] = session;
   const key = sessionKey(session);
-  const openable = session.discipline !== "rest";
+  const openable = true;
   return `
   <button ${openable ? `onclick="openSession('${esc(key)}')"` : "disabled"}
     class="w-full text-left rounded-xl border ${meta.ring} ${meta.soft} p-3.5 flex items-center gap-3 transition active:scale-[0.99]">
@@ -553,8 +580,11 @@ function skillAssessmentHTML(athlete) {
   </div>`;
 }
 
+const DAY_TYPE_OPTIONS = ["rest", "run", "strength", "night"];
+
 function logFormHTML(session, existing) {
   const meta = DISCIPLINE_META[session.discipline];
+  const isRest = session.discipline === "rest";
   return `
   <div class="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4 overflow-y-auto">
     <div class="bg-stone-900 border border-stone-700 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md p-5 space-y-5 my-6">
@@ -566,6 +596,28 @@ function logFormHTML(session, existing) {
         <button onclick="closeSession()" class="text-stone-500 hover:text-stone-300">${iconSpan("x","w-5 h-5")}</button>
       </div>
 
+      <div class="space-y-2 border-b border-stone-800 pb-5">
+        <h4 class="text-stone-400 text-[11px] font-semibold uppercase tracking-wide">Tipo de dia</h4>
+        <p class="text-stone-600 text-[11px]">Treinaste num dia que estava marcado como descanso (ou o contrário)? Muda o tipo aqui.</p>
+        <div class="flex gap-2 flex-wrap pt-1">
+          ${DAY_TYPE_OPTIONS.map(id => {
+            const m = DISCIPLINE_META[id];
+            const active = session.discipline === id;
+            return `<button onclick="setActiveDiscipline('${id}')"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs transition ${active ? `${m.ring} ${m.soft} ${m.color} font-semibold` : "border-stone-700 text-stone-500"}">
+              ${iconSpan(m.icon, "w-3.5 h-3.5")} ${m.label}
+            </button>`;
+          }).join("")}
+        </div>
+      </div>
+
+      ${isRest ? `
+      <div class="space-y-2 pb-1">
+        <p class="text-stone-500 text-xs">Este dia fica marcado como descanso. Se treinaste afinal, escolhe o tipo de treino acima para poderes registá-lo.</p>
+      </div>
+      <div class="flex gap-2 pt-1">
+        <button onclick="saveLog()" class="flex-1 bg-amber-500 hover:bg-amber-400 text-stone-950 font-semibold rounded-lg py-2.5">Guardar</button>
+      </div>` : `
       <div class="space-y-3 border-b border-stone-800 pb-5">
         <h4 class="text-stone-400 text-[11px] font-semibold uppercase tracking-wide">Ajustar sessão planeada</h4>
         <label class="text-xs text-stone-400 flex flex-col gap-1">Título
@@ -610,7 +662,7 @@ function logFormHTML(session, existing) {
 
       <div class="flex gap-2 pt-1">
         <button onclick="saveLog()" class="flex-1 bg-amber-500 hover:bg-amber-400 text-stone-950 font-semibold rounded-lg py-2.5">Guardar</button>
-      </div>
+      </div>`}
     </div>
   </div>`;
 }
@@ -998,19 +1050,58 @@ function toggleTech() { S.expandTech = !S.expandTech; render(); }
 function openSession(key) { S.activeSession = __registry[key]; render(); }
 function closeSession() { S.activeSession = null; render(); }
 
+// Muda o tipo de dia (ex: descanso -> corrida) dentro do formulário aberto, sem guardar ainda.
+function setActiveDiscipline(disciplineId) {
+  if (!S.activeSession) return;
+  const m = DISCIPLINE_META[disciplineId];
+  const wasRest = S.activeSession.discipline === "rest";
+  S.activeSession = {
+    ...S.activeSession,
+    discipline: disciplineId,
+    title: disciplineId === "rest"
+      ? "Descanso"
+      : (wasRest || S.activeSession.discipline === "rest" ? `${m.label} (extra — não planeado)` : S.activeSession.title),
+    intensity: disciplineId === "rest" ? "—" : (S.activeSession.intensity === "—" ? "Z2" : S.activeSession.intensity),
+    duration: disciplineId === "rest" ? 0 : (S.activeSession.duration || 45),
+    description: disciplineId === "rest" ? "Recuperação: mobilidade leve ou nada." : S.activeSession.description,
+  };
+  render();
+}
+
 async function saveLog() {
   const session = S.activeSession;
   if (!session) return;
-  const key = sessionKey(session);
+  const baseRef = session.__baseRef || session;
+  const discipline = session.discipline;
+  const overrideKey = overrideKeyFor(baseRef);
+  const logKey = session.date + "_" + discipline;
+
+  if (discipline === "rest") {
+    // Volta a marcar o dia como descanso: guarda o override e limpa qualquer treino
+    // registado noutras disciplinas para a mesma data (evita registos "fantasma").
+    const override = { discipline: "rest", title: "Descanso", duration: 0, intensity: "—", elevation: 0, description: "Recuperação: mobilidade leve ou nada." };
+    S.overrides = { ...S.overrides, [overrideKey]: override };
+    await saveKey("ultramonster:overrides", S.overrides);
+
+    const nextLogs = { ...S.logs };
+    ["run", "strength", "night"].forEach(d => { delete nextLogs[session.date + "_" + d]; });
+    S.logs = nextLogs;
+    await saveKey("ultramonster:logs", S.logs);
+
+    S.activeSession = null;
+    render();
+    return;
+  }
 
   const override = {
+    discipline,
     title: document.getElementById("ov-title").value,
     duration: Number(document.getElementById("ov-duration").value) || 0,
     intensity: document.getElementById("ov-intensity").value,
     elevation: Number(document.getElementById("ov-elevation").value) || 0,
     description: document.getElementById("ov-description").value,
   };
-  S.overrides = { ...S.overrides, [key]: override };
+  S.overrides = { ...S.overrides, [overrideKey]: override };
   await saveKey("ultramonster:overrides", S.overrides);
 
   const data = {
@@ -1023,7 +1114,7 @@ async function saveLog() {
     notes: document.getElementById("log-notes").value,
     stravaLink: document.getElementById("log-strava").value,
   };
-  S.logs = { ...S.logs, [key]: data };
+  S.logs = { ...S.logs, [logKey]: data };
   await saveKey("ultramonster:logs", S.logs);
 
   S.activeSession = null;
