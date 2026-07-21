@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ultra Monster</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  html,body{ background:#0c0a09; }
+  body{ font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  ::-webkit-scrollbar{ width:0; height:0; }
+  input[type=date]::-webkit-calendar-picker-indicator{ filter: invert(0.6); }
+</style>
+</head>
+<body class="bg-stone-950">
+<div id="app"></div>
+
+<script>
+// ================= constants =================
+const DAY_NAMES = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+
+const DISCIPLINE_META = {
+  rest:     { label: "Descanso",       icon: "moon",       color: "text-stone-500",  ring: "border-stone-700",   soft: "bg-stone-800/60" },
+  run:      { label: "Corrida",        icon: "footprints", color: "text-rose-400",   ring: "border-rose-500/40", soft: "bg-rose-500/10" },
+  strength: { label: "Força",          icon: "dumbbell",   color: "text-violet-400", ring: "border-violet-500/40", soft: "bg-violet-500/10" },
+  night:    { label: "Simulação noturna", icon: "flashlight", color: "text-indigo-400", ring: "border-indigo-500/40", soft: "bg-indigo-500/10" },
+  extra:    { label: "Extra técnico",   icon: "target",     color: "text-fuchsia-400", ring: "border-fuchsia-500/40", soft: "bg-fuchsia-500/10" },
+};
+
+const PHASE_META = {
+  Base:  { label: "Base",       desc: "Construir volume e resistência aeróbica" },
+  Build: { label: "Construção", desc: "Longos progressivos + back-to-back" },
+  Peak:  { label: "Pico",       desc: "Simulação específica de 24h (incl. noite)" },
+  Taper: { label: "Afinação",   desc: "Reduzir volume, preservar pernas e sono" },
+};
+
+const TRACK_LOOP_KM = 2.32;
+const TRACK_REGION = "zona de Lisboa";
+function lapsFor(km) { return km / TRACK_LOOP_KM; }
+
+const DISTANCE_BENCHMARKS = [
+  { id: "finisher", label: "Objetivo finisher",  sub: "terminar dentro das 24h",           minKm: 0,   color: "text-rose-400",    bar: "bg-rose-500" },
+  { id: "amateur",  label: "Bom amador",         sub: "onde está a maioria dos finishers", minKm: 150, color: "text-amber-400",   bar: "bg-amber-500" },
+  { id: "strong",   label: "Avançado",           sub: "nível de pódio em provas nacionais", minKm: 200, color: "text-cyan-400",   bar: "bg-cyan-500" },
+  { id: "elite",    label: "Elite",              sub: "topo nacional / internacional",     minKm: 250, color: "text-emerald-400", bar: "bg-emerald-500" },
+];
+const DIST_MIN = 80, DIST_MAX = 280;
+
+function findBand(totalKm) {
+  for (let i = DISTANCE_BENCHMARKS.length - 1; i >= 0; i--) {
+    if (totalKm >= DISTANCE_BENCHMARKS[i].minKm) return DISTANCE_BENCHMARKS[i];
+  }
+  return DISTANCE_BENCHMARKS[0];
+}
+
+function addDaysRaw(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
+
+function getBestLongRun(logs, days = 35) {
+  const cutoff = addDaysRaw(new Date(), -days);
+  let best = null;
+  Object.entries(logs || {}).forEach(([key, log]) => {
+    if (!log || !log.completed) return;
+    if (!key.endsWith("_run") && !key.endsWith("_night")) return;
+    const dateStr = key.slice(0, 10);
+    if (new Date(dateStr) < cutoff) return;
+    if (!log.actualDuration || !log.actualDistance) return;
+    if (!best || log.actualDuration > best.actualDuration) best = { ...log, date: dateStr };
+  });
+  return best;
+}
+
+function estimateUltraDistance(logs) {
+  const longRun = getBestLongRun(logs);
+  if (!longRun) return null;
+  const T1 = longRun.actualDuration;
+  const D1 = longRun.actualDistance;
+  if (!T1 || !D1) return null;
+  const k = 1.15;
+  const T2 = 1440;
+  const totalKm = D1 * Math.pow(T2 / T1, 1 / k);
+  return { totalKm, base: longRun };
+}
+
+const SKILL_DEFS = {
+  run: [
+    { id: "economy",  label: "Economia de corrida" },
+    { id: "pacing",   label: "Gestão de ritmo (run/walk)" },
+    { id: "strength", label: "Força de pernas / excêntrico" },
+    { id: "mental",   label: "Tolerância ao desconforto" },
+    { id: "nutrition", label: "Nutrição em treino longo" },
+  ],
+};
+
+const DRILLS = {
+  run: {
+    economy: [
+      { title: "Cadência alta com metrónomo", duration: 20, description: "4x3min a cadência +5-8% face ao teu passo natural, passos curtos e leves, sem aumentar a velocidade." },
+      { title: "Strides em piso plano", duration: 10, description: "6x20seg a ritmo rápido mas relaxado, foco em postura alta e braços económicos, recuperação completa." },
+      { title: "Corrida ao ritmo da música (170-175bpm)", duration: 20, description: "Correr sincronizando o passo com uma playlist a essa cadência — reduz o gasto de energia por km ao longo de muitas horas." },
+    ],
+    pacing: [
+      { title: "Rácio run/walk 9:1", duration: 40, description: "Alternar 9min a correr / 1min a andar durante todo o treino — sente a transição e o alívio que o minuto de marcha dá às pernas." },
+      { title: "Rácio 4:1 em fadiga", duration: 30, description: "Nos últimos 30min de um treino mais longo, mudar para 4min a correr / 1min a andar — testa o rácio que vais provavelmente precisar depois das 12-15h de prova." },
+      { title: "Negative effort", duration: 45, description: "Dividir o treino em 3 blocos iguais, cada um a um esforço percebido ligeiramente mais contido que o anterior — treina a contenção que evita 'rebentar' cedo numa 24h." },
+    ],
+    strength: [
+      { title: "Step-downs excêntricos", duration: 15, description: "3x12 reps por perna, descida lenta e controlada num degrau — fortalece o quadricípite para absorver impacto repetido durante 20+ horas." },
+      { title: "Calf raises + tibial anterior", duration: 12, description: "3x15 de cada lado — previne canelite e fadiga do pé, muito comum em pistas planas percorridas dezenas de vezes." },
+      { title: "Estabilidade de anca (clamshells + monster walk)", duration: 12, description: "3 séries de cada com elástico — anca estável evita compensações que geram dor lombar/joelho ao fim de muitas horas em pé." },
+    ],
+    mental: [
+      { title: "Corrida na hora crítica (2h-4h)", duration: 60, description: "Faz este treino a começar de madrugada — simula a janela mais dura de uma 24h (sono, temperatura, motivação) num contexto seguro e controlado." },
+      { title: "Últimos 20min sem parar", duration: 60, description: "Treino longo em que a única regra nos últimos 20min é não parar — treina o diálogo interno para as fases más da prova." },
+      { title: "Sessão a solo, sem música", duration: 60, description: "60min+ sem estímulos externos — treina a mente para as horas sozinho na pista, sem a distração habitual." },
+    ],
+    nutrition: [
+      { title: "Fueling a cada 20min", duration: 90, description: "Num treino longo, come/bebe exatamente a cada 20min o que planeias usar na prova — nunca testes algo novo no dia." },
+      { title: "Alternância sólido/líquido/salgado", duration: 90, description: "Pratica trocar entre gel, fruta, batata cozida ou caldo e bebida isotónica — a variedade evita 'cansaço do palato' ao fim de muitas horas." },
+      { title: "Comida noturna em fadiga", duration: 60, description: "Nas últimas 2h de um treino longo tardio, testa alimentos quentes/salgados (caldo, batata) — muito usados a meio da noite numa 24h para reanimar o apetite." },
+    ],
+  },
+};
+
+function defaultSkills() {
+  const build = (arr) => Object.fromEntries(arr.map((s) => [s.id, 3]));
+  return { assessed: false, run: build(SKILL_DEFS.run) };
+}
+function weakestSkill(skills) {
+  const defs = SKILL_DEFS.run;
+  const scores = skills?.run || {};
+  let weak = defs[0], weakVal = scores[defs[0].id] ?? 3;
+  defs.forEach((d) => { const v = scores[d.id] ?? 3; if (v < weakVal) { weak = d; weakVal = v; } });
+  return weak;
+}
+function suggestedDrill(skillId, seed) { const options = DRILLS.run[skillId]; return options[seed % options.length]; }
+function defaultExtraSession() { return { enabled: true, day: "wednesday" }; }
+function getWeakestPairs(skills) {
+  if (!skills?.assessed) return null;
+  const all = SKILL_DEFS.run.map((s) => ({ id: s.id, label: s.label, score: skills.run?.[s.id] ?? 3 }));
+  all.sort((a, b) => a.score - b.score);
+  return all.slice(0, 2);
+}
+function buildExtraSession(athlete, weekNumber, dateISO) {
+  const pairs = getWeakestPairs(athlete.skills);
+  if (!pairs) return null;
+  const parts = pairs.map((p) => ({ ...p, drill: suggestedDrill(p.id, weekNumber) }));
+  const duration = parts.reduce((sum, p) => sum + p.drill.duration, 0);
+  const title = `Extra: ${parts.map((p) => p.label).join(" + ")}`;
+  const description = parts.map((p) => p.drill.title).join(" · ");
+  return { date: dateISO, discipline: "extra", title, duration, intensity: "Opcional", description, parts };
+}
+
+const PROTEIN_PER_KG = { lo: 1.4, hi: 1.6 };
+function carbTargetForMinutes(minutes) {
+  if (minutes === 0) return { lo: 3, hi: 4, label: "Dia de descanso" };
+  if (minutes < 60) return { lo: 4, hi: 5, label: "Dia leve" };
+  if (minutes < 150) return { lo: 5, hi: 7, label: "Dia moderado" };
+  return { lo: 7, hi: 10, label: "Dia longo / chave" };
+}
+
+const FUEL_GUIDE = [
+  { label: "Sessões moderadas (60–150min)", min: 60, max: 150,
+    before: "Refeição rica em carboidratos 2-3h antes, ou snack ligeiro 30-60min antes.",
+    during: "30-60g de carboidratos/hora (bebida desportiva ou gel) + água conforme a sede.",
+    after: "20-25g de proteína + carboidratos dentro de 30-60min após terminar." },
+  { label: "Sessões longas (150-360min)", min: 150, max: 360,
+    before: "Refeição rica em carboidratos ~3h antes, para depósitos de glicogénio cheios.",
+    during: "60-90g carboidratos/hora (mistura glucose+frutose), 500-750mg sódio/hora, líquidos conforme sede e sudação.",
+    after: "Refeição de recuperação em 30-60min: ~1-1.2g/kg carboidratos + 20-25g proteína, repor ~150% do peso perdido em líquidos." },
+  { label: "Esforço contínuo ultra (>360min / dia da prova)", min: 360, max: Infinity,
+    before: "Refeição rica em carboidratos ~3h antes do início, evitar fibra/gordura em excesso.",
+    during: "Roda entre gel, fruta, batata cozida, caldo/sopa (sobretudo de noite) e bebida isotónica — varia a textura para não saturar o palato. Cafeína em doses espaçadas ao longo das 24h, não tudo de uma vez.",
+    after: "Prioriza líquidos com eletrólitos e uma refeição leve e quente assim que o apetite voltar — não forces comida sólida logo a seguir a terminar." },
+];
+
+const MEAL_PLANS = [
+  { label: "Dia de treino longo (carboidrato alto)", slots: [
+    { slot: "Pequeno-almoço", options: [
+      "Aveia com banana, mel e iogurte grego",
+      "Panquecas de aveia e banana com compota",
+      "Pão integral torrado com ovo mexido e fruta",
+    ]},
+    { slot: "Snack pré-treino", options: [
+      "Torrada com compota",
+      "Banana com um fio de mel",
+      "Barrita de cereais caseira",
+    ]},
+    { slot: "Durante (sessão longa)", options: [
+      "Gel energético a cada 20-30min",
+      "Fruta desidratada (tâmaras, passas) a cada 20-30min",
+      "Bebida desportiva isotónica a cada 20-30min",
+    ]},
+    { slot: "Pós-treino", options: [
+      "Batido de proteína com fruta",
+      "Iogurte grego com granola e mel",
+      "Sandes de frango com pão integral",
+    ]},
+    { slot: "Almoço/Jantar", options: [
+      "Arroz com frango grelhado e vegetais",
+      "Massa integral com atum e legumes",
+      "Batata-doce, peixe grelhado e brócolos",
+    ]},
+  ]},
+  { label: "Dia de descanso (carboidrato moderado)", slots: [
+    { slot: "Pequeno-almoço", options: [
+      "Ovos mexidos com abacate e pão integral",
+      "Iogurte grego com frutos vermelhos e nozes",
+      "Omelete de legumes com queijo fresco",
+    ]},
+    { slot: "Almoço", options: [
+      "Salada com frango grelhado e azeite",
+      "Grão-de-bico salteado com legumes",
+      "Salada de atum com quinoa",
+    ]},
+    { slot: "Snack", options: [
+      "Frutos secos e uma peça de fruta",
+      "Iogurte natural com canela",
+      "Palitos de cenoura com húmus",
+    ]},
+    { slot: "Jantar", options: [
+      "Peixe grelhado com vegetais e azeite",
+      "Frango assado com legumes salteados",
+      "Omelete de espinafres com salada",
+    ]},
+  ]},
+];
+
+const SUPPLEMENTS = [
+  { label: "Eletrólitos (sódio, potássio, magnésio)", note: "Essenciais em esforços de muitas horas — perdas de sódio no suor ao longo de 24h podem ser elevadas. Treina a estratégia nos longos, nunca no dia da prova." },
+  { label: "Carboidratos de exercício (géis, bebidas, chews)", note: "Treina o intestino a tolerar a quantidade e o tipo que vais usar na prova durante os treinos longos." },
+  { label: "Proteína em pó (whey ou vegetal)", note: "Forma prática de atingir o alvo diário, sobretudo pós-treino. Não é obrigatória se a alimentação sólida for suficiente." },
+  { label: "Cafeína", note: "Pode ajudar a manter alerta durante a noite. Testa dose e timing em treino — nunca pela primeira vez na prova." },
+  { label: "Anti-inflamatórios (AINEs, ex. ibuprofeno)", note: "Evita durante a prova — em esforços de muitas horas aumentam o risco renal e de hiponatrémia. Fala com um médico sobre alternativas para gerir dor." },
+  { label: "Ferro, vitamina D, ómega-3", note: "Comuns em atletas de resistência de alto volume, mas suplementar sem indicação não é recomendado — pede análises e acompanhamento a um médico ou nutricionista desportivo." },
+];
+
+// ================= date helpers =================
+function toISO(d) { return d.toISOString().slice(0, 10); }
+function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
+function startOfWeek(d) { const r = new Date(d); const day = (r.getDay() + 6) % 7; r.setDate(r.getDate() - day); r.setHours(0,0,0,0); return r; }
+function diffWeeks(a, b) { return Math.ceil((b - a) / (7 * 24 * 3600 * 1000)); }
+function fmtDate(iso) { const d = new Date(iso + "T00:00:00"); return d.toLocaleDateString("pt-PT", { day: "2-digit", month: "short" }); }
+function fmtMin(min) { if (min <= 0) return "—"; const h = Math.floor(min/60), m = Math.round(min%60); return h>0 ? `${h}h${m>0?String(m).padStart(2,"0"):""}` : `${m}min`; }
+function fmtKm(km) { if (!km || km<=0) return "—"; return `${km.toFixed(1)}km`; }
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function esc(s){ return (s===undefined||s===null) ? "" : String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+// ================= plan generation =================
+function generatePlan(raceDateISO, todayISO) {
+  const today = startOfWeek(new Date(todayISO));
+  const race = new Date(raceDateISO + "T00:00:00");
+  const totalWeeks = Math.max(10, diffWeeks(today, race));
+
+  const taperWeeks = clamp(Math.round(totalWeeks * 0.08), 2, 3);
+  const peakWeeks = Math.max(3, Math.round(totalWeeks * 0.25));
+  const buildWeeksBase = Math.max(2, Math.round(totalWeeks * 0.15));
+  const baseWeeksRaw = Math.max(4, totalWeeks - taperWeeks - peakWeeks - buildWeeksBase);
+  // Base encurtada ~18% face ao cálculo original — o tempo poupado passa para a Construção,
+  // que ganha mais peso relativo no plano.
+  const baseWeeks = Math.max(4, Math.round(baseWeeksRaw * 0.82));
+  const buildWeeks = buildWeeksBase + Math.max(0, baseWeeksRaw - baseWeeks);
+
+  const boundaries = [
+    { phase: "Base", weeks: baseWeeks },
+    { phase: "Build", weeks: buildWeeks },
+    { phase: "Peak", weeks: peakWeeks },
+    { phase: "Taper", weeks: taperWeeks },
+  ];
+
+  const weeks = [];
+  let idx = 0;
+  for (const block of boundaries) {
+    for (let i = 0; i < block.weeks; i++) {
+      weeks.push({ index: idx, phase: block.phase, phaseProgress: block.weeks > 1 ? i / (block.weeks - 1) : 1 });
+      idx++;
+    }
+  }
+
+  const grandTotal = weeks.length;
+  return weeks.map((w, i) => {
+    const globalProgress = clamp(i / Math.max(1, grandTotal - taperWeeks - 1), 0, 1);
+    const isCutback = (i + 1) % 4 === 0 && w.phase !== "Taper";
+    const isTaper = w.phase === "Taper";
+    const taperFactor = isTaper ? lerp(0.6, 0.15, w.phaseProgress) : 1;
+    const isNightWeek = (w.phase === "Peak" || (w.phase === "Build" && w.phaseProgress > 0.5)) && (w.index % 3 === 0) && !isCutback && !isTaper;
+
+    let longRun = clamp(lerp(50, 330, globalProgress), 50, 330);
+    let run2 = clamp(lerp(20, 120, globalProgress), 20, 120);
+    let qualityRun = clamp(lerp(30, 70, globalProgress), 30, 70);
+    let easyRun = clamp(lerp(30, 50, globalProgress), 30, 50);
+
+    if (isTaper) { longRun *= taperFactor/0.6; run2 *= taperFactor/0.6; qualityRun *= taperFactor/0.6 + 0.2; }
+    if (isCutback) { longRun *= 0.6; run2 *= 0.65; qualityRun *= 0.75; }
+
+    const strength = w.phase === "Taper" ? 20 : 35;
+    const shakeout = 20;
+
+    const weekStart = addDays(today, i * 7);
+    const dateAt = (off) => toISO(addDays(weekStart, off));
+
+    const days = [
+      { date: dateAt(0), discipline: "rest", title: "Descanso", duration: 0, intensity: "—", description: "Recuperação: mobilidade leve ou nada." },
+      { date: dateAt(1), discipline: "run", title: "Corrida fácil + economia", duration: Math.round(easyRun), intensity: "Z1-Z2", description: "Ritmo confortável, foco em cadência e postura." },
+      { date: dateAt(2), discipline: "strength", title: "Força + core", duration: Math.round(strength), intensity: "Moderado", description: "Excêntricos de perna, core, estabilidade de anca e tornozelo." },
+      { date: dateAt(3), discipline: "run", title: "Corrida com ritmo", duration: Math.round(qualityRun), intensity: "Z2-Z3", description: w.phase === "Base" ? "Fartlek leve, sem forçar." : "Blocos de tempo/limiar, simula gestão de esforço em fadiga." },
+      { date: dateAt(4), discipline: "run", title: "Shakeout + ativação", duration: shakeout, intensity: "Z1", description: "Corrida curta e leve para chegar fresco ao fim de semana." },
+      isNightWeek
+        ? { date: dateAt(5), discipline: "night", title: "Longa noturna — simulação", duration: Math.round(Math.min(longRun,200)), intensity: "Z2 noturno", description: `Começa tarde (22h-23h) — simula a hora crítica da prova. Percurso na pista (${TRACK_LOOP_KM}km/volta) ajuda a treinar a monotonia do loop.` }
+        : { date: dateAt(5), discipline: "run", title: "Corrida longa", duration: Math.round(longRun), intensity: "Z2", description: PHASE_META[w.phase].desc },
+      { date: dateAt(6), discipline: "run", title: "Corrida longa — back-to-back", duration: Math.round(run2), intensity: "Z2", description: "Pernas já fatigadas do dia anterior — o mais específico do treino para uma 24h." },
+    ];
+
+    return { weekNumber: i+1, phase: w.phase, isCutback, isNightWeek, startDate: toISO(weekStart), days };
+  });
+}
+
+// ================= storage =================
+async function loadKey(key) {
+  try { const r = await window.storage.get(key, false); return r ? JSON.parse(r.value) : null; } catch { return null; }
+}
+async function saveKey(key, value) {
+  try { await window.storage.set(key, JSON.stringify(value), false); } catch {}
+}
+
+// ================= state =================
+let S = {
+  loading: true,
+  athlete: null,
+  plan: [],
+  logs: {},
+  overrides: {},
+  tab: "home",
+  weekIdx: 0,
+  activeSession: null,
+  form: { name: "", raceName: "Ultra Monster", raceDate: "2027-06-01", goalKm: "" },
+  expandTech: false,
+};
+let __registry = {};
+
+function sessionKey(s){ return s.date + "_" + s.discipline; }
+
+// Ajusta sessões futuras (ainda não registadas) com base no RPE recente registado —
+// esforço percebido alto reduz ligeiramente o volume seguinte, esforço baixo permite subir um pouco.
+function computeAdaptiveFactor(logs) {
+  const entries = Object.entries(logs || {})
+    .filter(([k, v]) => v && v.completed && (k.endsWith("_run") || k.endsWith("_night") || k.endsWith("_strength")))
+    .map(([k, v]) => ({ date: k.slice(0, 10), rpe: v.rpe }))
+    .filter(e => e.rpe)
+    .sort((a, b) => (a.date < b.date ? 1 : -1))
+    .slice(0, 6);
+  if (!entries.length) return 1;
+  const avgRpe = entries.reduce((s, e) => s + e.rpe, 0) / entries.length;
+  if (avgRpe >= 8) return 0.85;
+  if (avgRpe >= 7) return 0.93;
+  if (avgRpe <= 3.5) return 1.12;
+  if (avgRpe <= 4.5) return 1.06;
+  return 1;
+}
+
+// Combina a sessão planeada com qualquer edição manual (override) guardada pelo utilizador;
+// se não houver override e a sessão ainda for futura, aplica o fator adaptativo ao volume.
+function effectiveSession(base) {
+  const key = sessionKey(base);
+  const ov = S.overrides[key];
+  if (ov) return { ...base, ...ov, __overridden: true };
+  if (base.discipline !== "rest" && new Date(base.date) > new Date(getToday())) {
+    const factor = computeAdaptiveFactor(S.logs);
+    if (factor !== 1) return { ...base, duration: Math.max(10, Math.round(base.duration * factor)), __adaptive: factor };
+  }
+  return base;
+}
+
+// ================= derived helpers =================
+function getWeek() { return S.plan[S.weekIdx]; }
+function getToday() { return toISO(new Date()); }
+
+// ================= render pieces =================
+function iconSpan(name, cls){ return `<i data-lucide="${name}" class="${cls||''}"></i>`; }
+
+function sessionCardHTML(session, log) {
+  const meta = DISCIPLINE_META[session.discipline];
+  const done = log && log.completed;
+  __registry[sessionKey(session)] = session;
+  const key = sessionKey(session);
+  const openable = session.discipline !== "rest";
+  return `
+  <button ${openable ? `onclick="openSession('${esc(key)}')"` : "disabled"}
+    class="w-full text-left rounded-xl border ${meta.ring} ${meta.soft} p-3.5 flex items-center gap-3 transition active:scale-[0.99]">
+    ${iconSpan(meta.icon, `w-5 h-5 ${meta.color} shrink-0`)}
+    <div class="flex-1 min-w-0">
+      <div class="text-stone-100 text-sm font-medium truncate">${esc(session.title)}</div>
+      <div class="text-stone-400 text-xs truncate">${esc(session.description)}</div>
+    </div>
+    <div class="text-right shrink-0">
+      <div class="text-stone-200 text-sm font-mono">${fmtMin(session.duration)}</div>
+      <div class="text-stone-500 text-[10px]">${esc(session.intensity)}${session.elevation ? ` · ⛰${session.elevation}m` : ""}</div>
+      ${session.__adaptive ? `<div class="text-amber-500/70 text-[9px]">ajustado</div>` : ""}
+    </div>
+    ${session.discipline !== "rest" ? (done
+      ? iconSpan("check-circle-2", "w-5 h-5 text-emerald-400 shrink-0")
+      : iconSpan("circle", "w-5 h-5 text-stone-600 shrink-0")) : ""}
+    ${log && log.stravaLink ? `<a href="${esc(log.stravaLink)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="shrink-0 text-orange-400">${iconSpan("link","w-4 h-4")}</a>` : ""}
+  </button>`;
+}
+
+function countdownRingSVG(weeksLeft, totalWeeks) {
+  const pct = clamp(1 - weeksLeft / Math.max(1, totalWeeks), 0, 1);
+  const r = 54, c = 2 * Math.PI * r;
+  return `
+  <svg viewBox="0 0 128 128" class="w-32 h-32 -rotate-90">
+    <circle cx="64" cy="64" r="${r}" fill="none" stroke="currentColor" class="text-stone-800" stroke-width="10"/>
+    <circle cx="64" cy="64" r="${r}" fill="none" stroke="currentColor" class="text-amber-400" stroke-width="10"
+      stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pct)}" stroke-linecap="round"/>
+  </svg>`;
+}
+
+function benchmarkTrackHTML(estimate) {
+  const pos = estimate ? clamp(((estimate.totalKm - DIST_MIN) / (DIST_MAX - DIST_MIN)) * 100, 1, 99) : null;
+  let bars = "";
+  DISTANCE_BENCHMARKS.forEach((b,i) => {
+    const prevMin = i===0 ? DIST_MIN : DISTANCE_BENCHMARKS[i].minKm;
+    const nextBound = i===DISTANCE_BENCHMARKS.length-1 ? DIST_MAX : DISTANCE_BENCHMARKS[i+1].minKm;
+    const width = ((Math.min(nextBound,DIST_MAX) - Math.max(prevMin,DIST_MIN)) / (DIST_MAX-DIST_MIN)) * 100;
+    bars += `<div class="${b.bar}" style="width:${width}%"></div>`;
+  });
+  return `
+  <div class="space-y-1">
+    <div class="relative h-3 rounded-full overflow-hidden flex">
+      ${bars}
+      ${pos!==null ? `<div class="absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-stone-950 border-2 border-stone-100 shadow" style="left:${pos}%; transform: translate(-50%, -50%)"></div>` : ""}
+    </div>
+    <div class="flex justify-between text-[10px] text-stone-600 font-mono">
+      <span>80km</span><span>150km</span><span>200km</span><span>250km+</span>
+    </div>
+  </div>`;
+}
+
+function estimateCardHTML(estimate, goalKm, compact) {
+  if (!estimate) {
+    return `
+    <div class="bg-stone-900/60 border border-stone-800 rounded-2xl p-4 space-y-3">
+      <div class="flex items-center gap-2">
+        ${iconSpan("target","w-4 h-4 text-stone-500")}
+        <span class="text-stone-300 text-sm font-medium">Estimativa de distância</span>
+      </div>
+      ${benchmarkTrackHTML(null)}
+      <p class="text-stone-500 text-xs">Regista uma corrida longa (com distância) para desbloquear a tua estimativa de km em 24h.</p>
+    </div>`;
+  }
+  const band = findBand(estimate.totalKm);
+  const gap = goalKm ? estimate.totalKm - goalKm : null;
+  return `
+  <div class="bg-stone-900/60 border border-stone-800 rounded-2xl p-4 space-y-3">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        ${iconSpan("target","w-4 h-4 text-stone-500")}
+        <span class="text-stone-300 text-sm font-medium">Estimativa de distância (24h)</span>
+      </div>
+      <span class="text-xs font-semibold ${band.color}">${band.label}</span>
+    </div>
+    <div class="flex items-baseline gap-2">
+      <span class="text-3xl font-mono font-bold text-stone-100">${fmtKm(estimate.totalKm)}</span>
+      <span class="text-stone-500 text-xs">projetado em 24h</span>
+    </div>
+    ${benchmarkTrackHTML(estimate)}
+    ${goalKm ? `<div class="text-xs rounded-lg px-3 py-2 ${gap>=0 ? "bg-emerald-500/10 text-emerald-400" : "bg-amber-500/10 text-amber-400"}">
+      ${gap>=0 ? `${Math.abs(gap).toFixed(1)}km acima do teu objetivo de ${goalKm}km.` : `Faltam ${Math.abs(gap).toFixed(1)}km para o teu objetivo de ${goalKm}km.`}
+    </div>` : ""}
+    ${!compact ? `<div class="flex items-start gap-1.5 text-stone-600 text-[11px] pt-1 border-t border-stone-800">
+      ${iconSpan("info","w-3.5 h-3.5 shrink-0 mt-0.5")}
+      <span>Baseada na tua corrida longa mais recente, projetada para 24h contínuas. É uma estimativa aproximada — melhora à medida que registas mais treinos longos.</span>
+    </div>` : ""}
+  </div>`;
+}
+
+function courseCardHTML() {
+  const refs = [100,150,200,250];
+  return `
+  <div class="bg-stone-900/60 border border-stone-800 rounded-2xl p-4 space-y-3">
+    <div class="flex items-center gap-2">
+      ${iconSpan("map-pin","w-4 h-4 text-stone-500")}
+      <span class="text-stone-300 text-sm font-medium">Pista da prova</span>
+    </div>
+    <p class="text-stone-400 text-xs leading-relaxed">
+      Circuito fechado de <span class="text-stone-200 font-mono">${TRACK_LOOP_KM}km</span> por volta (${TRACK_REGION}), sem desníveis relevantes registados — piso essencialmente plano. Numa prova de loop, tens acesso a apoio a cada volta: usa isso a teu favor para trocar de roupa, comer sentado ou mudar de meias sem perder muito tempo.
+    </p>
+    <div class="grid grid-cols-4 gap-2 pt-1">
+      ${refs.map(km => `<div class="text-center">
+        <div class="text-stone-200 text-sm font-mono">${Math.round(lapsFor(km))}</div>
+        <div class="text-stone-600 text-[10px]">voltas p/ ${km}km</div>
+      </div>`).join("")}
+    </div>
+  </div>`;
+}
+
+function techFocusCardHTML(athlete, weekNumber) {
+  if (!athlete.skills?.assessed) {
+    return `
+    <div class="bg-stone-900/60 border border-stone-800 rounded-2xl p-4 space-y-2">
+      <h3 class="text-stone-300 text-sm font-medium">Foco técnico</h3>
+      <p class="text-stone-500 text-xs">Faz a tua auto-avaliação técnica em Definições para receberes exercícios específicos para os teus pontos mais fracos.</p>
+    </div>`;
+  }
+  const weak = weakestSkill(athlete.skills);
+  const drill = suggestedDrill(weak.id, weekNumber);
+  const expanded = S.expandTech;
+  return `
+  <div class="bg-stone-900/60 border border-stone-800 rounded-2xl p-4 space-y-3">
+    <h3 class="text-stone-300 text-sm font-medium">Foco técnico da semana</h3>
+    <div class="rounded-xl border ${DISCIPLINE_META.run.ring} ${DISCIPLINE_META.run.soft} p-3">
+      <div class="flex items-center gap-2 mb-1">
+        ${iconSpan("footprints","w-4 h-4 text-rose-400")}
+        <span class="text-stone-200 text-sm font-medium">Ponto a trabalhar: ${esc(weak.label.toLowerCase())}</span>
+      </div>
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <div class="text-stone-100 text-sm">${esc(drill.title)}</div>
+          <div class="text-stone-500 text-xs mt-0.5">${esc(drill.description)}</div>
+        </div>
+        <span class="text-stone-400 text-xs font-mono shrink-0">${drill.duration}min</span>
+      </div>
+      <button onclick="toggleTech()" class="text-stone-500 text-xs underline mt-1.5">${expanded ? "ocultar alternativas" : "ver outros exercícios"}</button>
+      ${expanded ? `<div class="mt-2 space-y-2 border-t border-stone-800 pt-2">
+        ${DRILLS.run[weak.id].map(d => `<div class="flex items-start justify-between gap-2">
+          <div>
+            <div class="text-stone-300 text-xs font-medium">${esc(d.title)}</div>
+            <div class="text-stone-600 text-[11px]">${esc(d.description)}</div>
+          </div>
+          <span class="text-stone-500 text-[11px] font-mono shrink-0">${d.duration}min</span>
+        </div>`).join("")}
+      </div>` : ""}
+    </div>
+    <p class="text-stone-600 text-[11px]">Adiciona o exercício sugerido ao início ou fim da sessão de corrida correspondente.</p>
+  </div>`;
+}
+
+function skillAssessmentHTML(athlete) {
+  const skills = athlete.skills || defaultSkills();
+  return `
+  <div class="space-y-2.5">
+    ${SKILL_DEFS.run.map(s => `
+      <div class="flex items-center justify-between gap-3">
+        <span class="text-stone-400 text-xs flex-1">${esc(s.label)}</span>
+        <div class="flex gap-1">
+          ${[1,2,3,4,5].map(v => `<button onclick="setSkillScore('${s.id}',${v})"
+            class="w-7 h-7 rounded-full text-xs font-mono border ${(skills.run?.[s.id] ?? 3)===v ? "bg-amber-500 border-amber-500 text-stone-950 font-bold" : "border-stone-700 text-stone-500"}">${v}</button>`).join("")}
+        </div>
+      </div>`).join("")}
+    <p class="text-stone-600 text-[11px] pt-2">1 = ponto fraco · 5 = ponto forte. Sê honesto — é isto que gera as sugestões de exercícios.</p>
+  </div>`;
+}
+
+function logFormHTML(session, existing) {
+  const meta = DISCIPLINE_META[session.discipline];
+  return `
+  <div class="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4 overflow-y-auto">
+    <div class="bg-stone-900 border border-stone-700 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md p-5 space-y-5 my-6">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          ${iconSpan(meta.icon, `w-5 h-5 ${meta.color}`)}
+          <h3 class="text-stone-100 font-semibold">${esc(session.title)}</h3>
+        </div>
+        <button onclick="closeSession()" class="text-stone-500 hover:text-stone-300">${iconSpan("x","w-5 h-5")}</button>
+      </div>
+
+      <div class="space-y-3 border-b border-stone-800 pb-5">
+        <h4 class="text-stone-400 text-[11px] font-semibold uppercase tracking-wide">Ajustar sessão planeada</h4>
+        <label class="text-xs text-stone-400 flex flex-col gap-1">Título
+          <input id="ov-title" value="${esc(session.title)}" class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100"/></label>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="text-xs text-stone-400 flex flex-col gap-1">Duração alvo (min)
+            <input id="ov-duration" type="number" min="0" value="${session.duration ?? 0}" class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100"/></label>
+          <label class="text-xs text-stone-400 flex flex-col gap-1">Intensidade
+            <input id="ov-intensity" value="${esc(session.intensity)}" class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100"/></label>
+          <label class="text-xs text-stone-400 flex flex-col gap-1 col-span-2">Desnível previsto (m)
+            <input id="ov-elevation" type="number" min="0" value="${session.elevation ?? ""}" class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100"/></label>
+        </div>
+        <label class="text-xs text-stone-400 flex flex-col gap-1">Descrição
+          <textarea id="ov-description" rows="2" class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100 resize-none">${esc(session.description ?? "")}</textarea></label>
+      </div>
+
+      <div class="space-y-3">
+        <h4 class="text-stone-400 text-[11px] font-semibold uppercase tracking-wide">Registar treino real</h4>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="text-xs text-stone-400 flex flex-col gap-1">Duração (min)
+            <input id="log-duration" type="number" min="0" value="${existing?.actualDuration ?? session.duration ?? ""}"
+              class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100"/></label>
+          <label class="text-xs text-stone-400 flex flex-col gap-1">Distância (km)
+            <input id="log-distance" type="number" min="0" value="${existing?.actualDistance ?? ""}"
+              class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100"/></label>
+          <label class="text-xs text-stone-400 flex flex-col gap-1">FC média (bpm)
+            <input id="log-hr" type="number" min="0" value="${existing?.avgHR ?? ""}"
+              class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100"/></label>
+          <label class="text-xs text-stone-400 flex flex-col gap-1">RPE (1-10)
+            <input id="log-rpe" type="number" min="1" max="10" value="${existing?.rpe ?? 5}"
+              class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100"/></label>
+          <label class="text-xs text-stone-400 flex flex-col gap-1 col-span-2">Desnível realizado (m)
+            <input id="log-elevation" type="number" min="0" value="${existing?.elevationGain ?? ""}"
+              class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100"/></label>
+        </div>
+        <label class="text-xs text-stone-400 flex flex-col gap-1">Notas
+          <textarea id="log-notes" rows="2" class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100 resize-none">${esc(existing?.notes ?? "")}</textarea></label>
+        <label class="text-xs text-stone-400 flex flex-col gap-1">Link do Strava (opcional)
+          <input id="log-strava" type="url" value="${esc(existing?.stravaLink ?? "")}" placeholder="https://strava.com/activities/..."
+            class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100"/></label>
+      </div>
+
+      <div class="flex gap-2 pt-1">
+        <button onclick="saveLog()" class="flex-1 bg-amber-500 hover:bg-amber-400 text-stone-950 font-semibold rounded-lg py-2.5">Guardar</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ================= nutrition tab =================
+function nutritionTabHTML(athlete, todayMinutes) {
+  const carb = carbTargetForMinutes(todayMinutes);
+  const weight = athlete.weight;
+  const activeFuelGuide = todayMinutes > 0 ? FUEL_GUIDE.find(g => todayMinutes >= g.min && todayMinutes < g.max) : null;
+  return `
+  <div class="px-5 py-5 space-y-6">
+    <div class="bg-stone-900/60 border border-stone-800 rounded-2xl p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <h3 class="text-stone-300 text-sm font-medium">Alvo de hoje</h3>
+        <span class="text-stone-500 text-xs">${carb.label}</span>
+      </div>
+      ${weight ? `
+      <div class="grid grid-cols-2 gap-3 text-center">
+        <div>
+          <div class="text-amber-400 font-mono text-lg">${Math.round(carb.lo*weight)}–${Math.round(carb.hi*weight)}g</div>
+          <div class="text-stone-600 text-[10px]">Carboidratos (${carb.lo}-${carb.hi}g/kg)</div>
+        </div>
+        <div>
+          <div class="text-violet-400 font-mono text-lg">${Math.round(PROTEIN_PER_KG.lo*weight)}–${Math.round(PROTEIN_PER_KG.hi*weight)}g</div>
+          <div class="text-stone-600 text-[10px]">Proteína (${PROTEIN_PER_KG.lo}-${PROTEIN_PER_KG.hi}g/kg)</div>
+        </div>
+      </div>` : `
+      <label class="text-xs text-stone-400 flex flex-col gap-1">Indica o teu peso para alvos personalizados (kg)
+        <input type="number" placeholder="Ex: 72" onchange="if(this.value) setWeight(Number(this.value))"
+          class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100 w-32"/></label>`}
+    </div>
+    ${activeFuelGuide ? `
+    <div class="bg-stone-900/60 border border-stone-800 rounded-2xl p-4 space-y-2">
+      <h3 class="text-stone-300 text-sm font-medium">${esc(activeFuelGuide.label)}</h3>
+      <div class="text-xs space-y-1.5">
+        <div><span class="text-stone-500">Antes: </span><span class="text-stone-300">${esc(activeFuelGuide.before)}</span></div>
+        <div><span class="text-stone-500">Durante: </span><span class="text-stone-300">${esc(activeFuelGuide.during)}</span></div>
+        <div><span class="text-stone-500">Depois: </span><span class="text-stone-300">${esc(activeFuelGuide.after)}</span></div>
+      </div>
+    </div>` : ""}
+    <div class="space-y-3">
+      <h3 class="text-stone-300 text-sm font-medium">Planos de refeição de referência</h3>
+      ${MEAL_PLANS.map(p => `
+      <div class="bg-stone-900/60 border border-stone-800 rounded-xl p-3 space-y-3">
+        <div class="text-stone-200 text-sm font-medium">${esc(p.label)}</div>
+        ${p.slots.map(sl => `
+          <div>
+            <div class="text-stone-400 text-xs font-medium mb-1">${esc(sl.slot)}</div>
+            <ul class="space-y-0.5 pl-3.5 list-disc marker:text-stone-700">
+              ${sl.options.map(o => `<li class="text-stone-500 text-xs">${esc(o)}</li>`).join("")}
+            </ul>
+          </div>`).join("")}
+      </div>`).join("")}
+    </div>
+    <div class="space-y-2">
+      <h3 class="text-stone-300 text-sm font-medium">Suplementação — categorias a considerar</h3>
+      <div class="space-y-2">
+        ${SUPPLEMENTS.map(s => `
+        <div class="bg-stone-900/60 border border-stone-800 rounded-xl p-3">
+          <div class="text-stone-200 text-sm font-medium">${esc(s.label)}</div>
+          <div class="text-stone-500 text-xs mt-0.5">${esc(s.note)}</div>
+        </div>`).join("")}
+      </div>
+      <p class="text-stone-600 text-[11px]">Isto é uma referência geral, não uma prescrição individual. Para doses e necessidades específicas — sobretudo ferro, vitamina D ou outras análises — fala com um médico ou nutricionista desportivo.</p>
+    </div>
+  </div>`;
+}
+
+// ================= main render =================
+function computeWeeklyChartData() {
+  const idx = S.weekIdx;
+  return S.plan.slice(0, idx+1).map(w => {
+    const totals = { week: `S${w.weekNumber}`, corrida: 0, forca: 0 };
+    w.days.forEach(d => {
+      const eff = effectiveSession(d);
+      if (eff.discipline === "run" || eff.discipline === "night") totals.corrida += eff.duration/60;
+      if (eff.discipline === "strength") totals.forca += eff.duration/60;
+    });
+    return totals;
+  }).slice(-10);
+}
+
+function render() {
+  __registry = {};
+  const app = document.getElementById("app");
+
+  if (S.loading) {
+    app.innerHTML = `<div class="min-h-screen bg-stone-950 flex items-center justify-center text-stone-500">A carregar…</div>`;
+    return;
+  }
+
+  if (!S.athlete) {
+    const f = S.form;
+    app.innerHTML = `
+    <div class="min-h-screen bg-stone-950 flex flex-col items-center justify-center px-6 py-12">
+      ${iconSpan("flag","w-10 h-10 text-amber-400 mb-4")}
+      <h1 class="text-3xl font-bold text-stone-100 tracking-tight text-center">Ultra Monster</h1>
+      <p class="text-stone-500 text-sm mt-2 mb-8 text-center max-w-xs">24 horas contínuas. Sem distância fixa — o objetivo é ires o mais longe possível. Vamos construir o teu plano.</p>
+      <div class="w-full max-w-sm space-y-4">
+        <label class="text-xs text-stone-400 flex flex-col gap-1">O teu nome
+          <input id="f-name" value="${esc(f.name)}" oninput="S.form.name=this.value; updateGenBtn()" class="bg-stone-900 border border-stone-700 rounded-lg px-3 py-2.5 text-stone-100" placeholder="Ex: Tomás"/></label>
+        <label class="text-xs text-stone-400 flex flex-col gap-1">Nome da prova
+          <input id="f-race" value="${esc(f.raceName)}" oninput="S.form.raceName=this.value" class="bg-stone-900 border border-stone-700 rounded-lg px-3 py-2.5 text-stone-100"/></label>
+        <label class="text-xs text-stone-400 flex flex-col gap-1">Data da prova
+          <input id="f-date" type="date" value="${esc(f.raceDate)}" oninput="S.form.raceDate=this.value" class="bg-stone-900 border border-stone-700 rounded-lg px-3 py-2.5 text-stone-100"/></label>
+        <label class="text-xs text-stone-400 flex flex-col gap-1">Objetivo de distância (km) — opcional
+          <input id="f-goal" type="number" min="0" value="${esc(f.goalKm)}" oninput="S.form.goalKm=this.value" class="bg-stone-900 border border-stone-700 rounded-lg px-3 py-2.5 text-stone-100" placeholder="Ex: 180"/></label>
+        <p class="text-stone-600 text-[11px]">O plano é gerado a partir da data real da prova — o número de semanas de Base/Construção/Pico/Afinação ajusta-se automaticamente ao tempo que falta no calendário.</p>
+        <button id="gen-btn" onclick="submitOnboarding()" ${!f.name ? "disabled" : ""}
+          class="w-full bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-stone-950 font-semibold rounded-lg py-3">Gerar plano de treino</button>
+      </div>
+    </div>`;
+    lucide.createIcons();
+    return;
+  }
+
+  const athlete = S.athlete;
+  const week = getWeek();
+  const today = getToday();
+  const effDays = week ? week.days.map(d => effectiveSession(d)) : [];
+  const todaySession = effDays.find(d => d.date === today);
+  const weeksLeft = Math.max(0, diffWeeks(new Date(), new Date(athlete.raceDate)));
+  const logs = S.logs;
+
+  const extraSessionBase = (week && athlete.extraSession?.enabled) ? (() => {
+    const offset = athlete.extraSession.day === "friday" ? 4 : 2;
+    const date = week.days[offset]?.date;
+    return date ? buildExtraSession(athlete, week.weekNumber, date) : null;
+  })() : null;
+  const extraSession = extraSessionBase ? effectiveSession(extraSessionBase) : null;
+  if (extraSession) __registry[sessionKey(extraSession)] = extraSession;
+
+  const todayMinutes = (() => {
+    let total = 0;
+    effDays.forEach(d => { if (d.date === today) total += d.duration; });
+    if (extraSession && extraSession.date === today) total += extraSession.duration;
+    return total;
+  })();
+
+  const completionRate = (() => {
+    if (!week) return 0;
+    const relevant = week.days.filter(d => d.discipline !== "rest");
+    const done = relevant.filter(d => logs[`${d.date}_${d.discipline}`]?.completed).length;
+    return relevant.length ? Math.round((done/relevant.length)*100) : 0;
+  })();
+
+  const estimate = estimateUltraDistance(logs);
+
+  let body = "";
+
+  if (S.tab === "home") {
+    body = `
+    <div class="px-5 py-5 space-y-6">
+      <div class="flex items-center gap-5 bg-stone-900/60 border border-stone-800 rounded-2xl p-5">
+        <div class="relative shrink-0">
+          ${countdownRingSVG(weeksLeft, S.plan.length)}
+          <div class="absolute inset-0 flex flex-col items-center justify-center">
+            <span class="text-2xl font-mono font-bold text-stone-100">${weeksLeft}</span>
+            <span class="text-[10px] text-stone-500 uppercase tracking-wide">semanas</span>
+          </div>
+        </div>
+        <div>
+          <div class="text-stone-200 font-medium">${PHASE_META[week?.phase || "Base"].label}</div>
+          <div class="text-stone-500 text-sm">${PHASE_META[week?.phase || "Base"].desc}</div>
+          <div class="text-stone-600 text-xs mt-1">Semana ${week?.weekNumber} de ${S.plan.length}${week?.isCutback ? " · recuperação" : ""}${week?.isNightWeek ? " · semana noturna" : ""}</div>
+        </div>
+      </div>
+      ${estimateCardHTML(estimate, athlete.goalKm, true)}
+      <div>
+        <h2 class="text-stone-300 text-sm font-medium mb-2">Hoje</h2>
+        ${todaySession ? sessionCardHTML(todaySession, logs[`${todaySession.date}_${todaySession.discipline}`]) : `<p class="text-stone-600 text-sm">Sem sessão marcada para hoje.</p>`}
+        ${(extraSession && extraSession.date === today) ? `<div class="mt-2">${sessionCardHTML(extraSession, logs[`${extraSession.date}_extra`])}</div>` : ""}
+      </div>
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="text-stone-300 text-sm font-medium">Esta semana</h2>
+          <span class="text-stone-500 text-xs font-mono">${completionRate}% concluído</span>
+        </div>
+        <div class="space-y-2">
+          ${effDays.map(d => `
+            ${sessionCardHTML(d, logs[`${d.date}_${d.discipline}`])}
+            ${(extraSession && extraSession.date === d.date) ? sessionCardHTML(extraSession, logs[`${extraSession.date}_extra`]) : ""}
+          `).join("")}
+        </div>
+      </div>
+    </div>`;
+  } else if (S.tab === "plan" && week) {
+    body = `
+    <div class="px-5 py-5 space-y-4">
+      ${techFocusCardHTML(athlete, week.weekNumber)}
+      <div class="flex items-center justify-between">
+        <button onclick="changeWeek(-1)" class="p-2 text-stone-400 disabled:opacity-30" ${S.weekIdx===0?"disabled":""}>${iconSpan("chevron-left","w-5 h-5")}</button>
+        <div class="text-center">
+          <div class="text-stone-100 font-semibold">Semana ${week.weekNumber}</div>
+          <div class="text-stone-500 text-xs">${fmtDate(week.startDate)} · ${PHASE_META[week.phase].label}${week.isCutback ? " · recuperação" : ""}${week.isNightWeek ? " · noturna" : ""}</div>
+        </div>
+        <button onclick="changeWeek(1)" class="p-2 text-stone-400 disabled:opacity-30" ${S.weekIdx===S.plan.length-1?"disabled":""}>${iconSpan("chevron-right","w-5 h-5")}</button>
+      </div>
+      <div class="space-y-2">
+        ${effDays.map((d,i) => `
+          <div>
+            <div class="text-stone-600 text-[10px] uppercase tracking-wide mb-1 pl-1">${DAY_NAMES[i]} · ${fmtDate(d.date)}</div>
+            ${sessionCardHTML(d, logs[`${d.date}_${d.discipline}`])}
+            ${(extraSession && extraSession.date === d.date) ? `<div class="mt-2">${sessionCardHTML(extraSession, logs[`${extraSession.date}_extra`])}</div>` : ""}
+          </div>`).join("")}
+      </div>
+    </div>`;
+  } else if (S.tab === "goal") {
+    body = `
+    <div class="px-5 py-5 space-y-5">
+      <div class="bg-stone-900/60 border border-stone-800 rounded-2xl p-4 flex items-end gap-3">
+        <label class="text-stone-400 text-xs flex-1 flex flex-col gap-1">Objetivo de distância (km)
+          <input id="goal-input" type="number" min="0" value="${athlete.goalKm ?? ""}" placeholder="Ex: 180"
+            class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100"/></label>
+        <button onclick="updateGoalKm(document.getElementById('goal-input').value)"
+          class="bg-amber-500 hover:bg-amber-400 text-stone-950 text-sm font-semibold rounded-lg px-4 py-2">Guardar</button>
+      </div>
+      ${estimateCardHTML(estimate, athlete.goalKm, false)}
+      ${courseCardHTML()}
+      <div class="bg-stone-900/60 border border-stone-800 rounded-2xl p-4 space-y-3">
+        <h3 class="text-stone-300 text-sm font-medium">Grupos de referência</h3>
+        ${DISTANCE_BENCHMARKS.map((b,i) => {
+          const nextBound = i === DISTANCE_BENCHMARKS.length-1 ? null : DISTANCE_BENCHMARKS[i+1].minKm;
+          const isCurrent = estimate && findBand(estimate.totalKm).id === b.id;
+          return `
+          <div class="flex items-center gap-3 rounded-xl p-2.5 ${isCurrent ? "bg-stone-800/80 border border-stone-700" : ""}">
+            <div class="w-2.5 h-2.5 rounded-full ${b.bar} shrink-0"></div>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium ${b.color}">${b.label}</div>
+              <div class="text-stone-600 text-xs truncate">${b.sub}</div>
+            </div>
+            <div class="text-stone-400 text-xs font-mono text-right shrink-0">${b.minKm}km${nextBound ? `–${nextBound}km` : "+"}</div>
+            ${isCurrent ? iconSpan("target","w-4 h-4 text-stone-300 shrink-0") : ""}
+          </div>`;
+        }).join("")}
+      </div>
+      <div class="bg-stone-900/60 border border-stone-800 rounded-2xl p-4 space-y-2">
+        <h3 class="text-stone-300 text-sm font-medium">Sobre esta prova</h3>
+        <p class="text-stone-500 text-xs leading-relaxed">
+          Sem distância fixa: o relógio é o adversário, não uma linha de chegada. Quem começa forte quase sempre paga entre as 12h-14h. Estratégia run/walk desde o início (ex: 9min a correr / 1min a andar) tende a bater "correr até não poder". A janela mais dura costuma ser entre as 2h e as 6h da manhã. Bolhas, atrito e pés inchados desistem mais gente do que a falta de fitness cardiovascular.
+        </p>
+      </div>
+    </div>`;
+  } else if (S.tab === "nutrition") {
+    body = nutritionTabHTML(athlete, todayMinutes);
+  } else if (S.tab === "progress") {
+    body = `
+    <div class="px-5 py-5 space-y-6">
+      <h2 class="text-stone-200 font-semibold">Volume semanal (horas)</h2>
+      <div class="bg-stone-900/60 border border-stone-800 rounded-2xl p-3 h-64">
+        <canvas id="volChart"></canvas>
+      </div>
+      <div class="bg-stone-900/60 border border-stone-800 rounded-2xl p-4 flex items-center justify-between">
+        <span class="text-stone-400 text-sm">Taxa de conclusão (semana atual)</span>
+        <span class="text-stone-100 font-mono text-lg">${completionRate}%</span>
+      </div>
+    </div>`;
+  } else if (S.tab === "settings") {
+    body = `
+    <div class="px-5 py-5 space-y-6">
+      <div>
+        <label class="text-xs text-stone-400 flex flex-col gap-1">Data da prova
+          <input type="date" value="${esc(athlete.raceDate)}" onchange="updateRaceDate(this.value)" class="bg-stone-900 border border-stone-700 rounded-lg px-3 py-2.5 text-stone-100"/></label>
+        <p class="text-stone-600 text-[11px] mt-1">Alterar a data recalcula todo o plano com base no calendário real (os registos de treino mantêm-se).</p>
+      </div>
+      <div class="border-t border-stone-800 pt-5">
+        <label class="text-xs text-stone-400 flex flex-col gap-1 max-w-[10rem]">Objetivo de distância (km)
+          <input type="number" min="0" value="${athlete.goalKm ?? ""}" placeholder="Ex: 180" onchange="updateGoalKm(this.value)" class="bg-stone-900 border border-stone-700 rounded-lg px-3 py-2.5 text-stone-100"/></label>
+        <p class="text-stone-600 text-[11px] mt-1">Usado para comparar com a tua estimativa projetada no separador Objetivo.</p>
+      </div>
+      <div class="border-t border-stone-800 pt-5">
+        <label class="text-xs text-stone-400 flex flex-col gap-1 max-w-[10rem]">Peso (kg)
+          <input type="number" value="${athlete.weight || ""}" placeholder="Ex: 72" onchange="setWeight(Number(this.value)||null)" class="bg-stone-900 border border-stone-700 rounded-lg px-3 py-2.5 text-stone-100"/></label>
+        <p class="text-stone-600 text-[11px] mt-1">Usado apenas para calcular alvos de nutrição personalizados (g de carboidratos/proteína).</p>
+      </div>
+      <div class="border-t border-stone-800 pt-5">
+        <h2 class="text-stone-200 font-semibold mb-1">Avaliação técnica</h2>
+        <p class="text-stone-600 text-xs mb-4">Classifica-te em cada sub-competência. A app usa o teu ponto mais fraco para sugerir exercícios específicos no separador Plano.</p>
+        ${skillAssessmentHTML(athlete)}
+      </div>
+      <div class="border-t border-stone-800 pt-5">
+        <div class="flex items-center justify-between mb-1">
+          <h2 class="text-stone-200 font-semibold">Sessão extra técnica/mental</h2>
+          <button onclick="toggleExtraEnabled()" class="w-11 h-6 rounded-full relative transition ${athlete.extraSession?.enabled ? "bg-amber-500" : "bg-stone-700"}">
+            <span class="absolute top-0.5 w-5 h-5 rounded-full bg-stone-950 transition ${athlete.extraSession?.enabled ? "left-5" : "left-0.5"}"></span>
+          </button>
+        </div>
+        <p class="text-stone-600 text-xs mb-3">Combina os teus 2 pontos mais fracos numa sessão curta e opcional, a meio da semana (o fim de semana já está ocupado com os longos).</p>
+        ${athlete.extraSession?.enabled ? `
+        <div class="flex gap-2">
+          ${[{id:"wednesday",label:"Quarta"},{id:"friday",label:"Sexta"}].map(d => `
+            <button onclick="setExtraDay('${d.id}')" class="flex-1 rounded-lg py-2 text-sm border ${athlete.extraSession?.day===d.id ? "bg-fuchsia-500/20 border-fuchsia-500/50 text-fuchsia-300" : "border-stone-700 text-stone-500"}">${d.label}</button>`).join("")}
+        </div>` : ""}
+      </div>
+      <button onclick="resetAll()" class="flex items-center gap-2 text-rose-400 text-sm border-t border-stone-800 pt-5 w-full">${iconSpan("trash-2","w-4 h-4")} Apagar tudo e recomeçar</button>
+    </div>`;
+  }
+
+  app.innerHTML = `
+  <div class="min-h-screen bg-stone-950 pb-20 font-sans">
+    <div class="px-5 pt-6 pb-4 border-b border-stone-900">
+      <div class="text-stone-500 text-xs uppercase tracking-widest">${esc(athlete.raceName)}</div>
+      <div class="text-stone-100 text-lg font-semibold">Olá, ${esc(athlete.name)}</div>
+    </div>
+    ${body}
+    ${S.activeSession ? logFormHTML(S.activeSession, logs[sessionKey(S.activeSession)]) : ""}
+    <div class="fixed bottom-0 inset-x-0 bg-stone-950/95 backdrop-blur border-t border-stone-900 flex justify-around py-2">
+      ${[
+        {id:"home", icon:"home", label:"Hoje"},
+        {id:"plan", icon:"calendar", label:"Plano"},
+        {id:"goal", icon:"target", label:"Objetivo"},
+        {id:"nutrition", icon:"utensils", label:"Nutrição"},
+        {id:"progress", icon:"trending-up", label:"Progresso"},
+        {id:"settings", icon:"settings", label:"Definições"},
+      ].map(t => `
+      <button onclick="setTab('${t.id}')" class="flex flex-col items-center gap-0.5 px-3 py-1">
+        ${iconSpan(t.icon, `w-5 h-5 ${S.tab===t.id ? "text-amber-400" : "text-stone-600"}`)}
+        <span class="text-[10px] ${S.tab===t.id ? "text-amber-400" : "text-stone-600"}">${t.label}</span>
+      </button>`).join("")}
+    </div>
+  </div>`;
+
+  lucide.createIcons();
+
+  if (S.tab === "progress") drawChart();
+}
+
+// ================= chart =================
+let __chart = null;
+function drawChart() {
+  const ctx = document.getElementById("volChart");
+  if (!ctx) return;
+  const data = computeWeeklyChartData();
+  if (__chart) __chart.destroy();
+  __chart = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: data.map(d => d.week),
+      datasets: [
+        { label: "Corrida", data: data.map(d => d.corrida), backgroundColor: "#fb7185", stack: "a", borderRadius: 4 },
+        { label: "Força", data: data.map(d => d.forca), backgroundColor: "#a78bfa", stack: "a" },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { stacked: true, ticks: { color: "#78716c", font: { size: 11 } }, grid: { color: "#292524" } },
+        y: { stacked: true, ticks: { color: "#78716c", font: { size: 11 } }, grid: { color: "#292524" } },
+      },
+      plugins: { legend: { labels: { color: "#a8a29e", font: { size: 11 } } } }
+    }
+  });
+}
+
+// ================= actions =================
+function updateGenBtn() {
+  const btn = document.getElementById("gen-btn");
+  if (btn) btn.disabled = !S.form.name;
+}
+
+async function submitOnboarding() {
+  if (!S.form.name) return;
+  createAthlete({ name: S.form.name, raceName: S.form.raceName, raceDate: S.form.raceDate, goalKm: S.form.goalKm });
+}
+
+async function createAthlete(a) {
+  const withSkills = {
+    ...a,
+    goalKm: (a.goalKm === "" || a.goalKm === undefined) ? (S.athlete?.goalKm ?? null) : Number(a.goalKm),
+    skills: a.skills || S.athlete?.skills || defaultSkills(),
+    extraSession: a.extraSession || S.athlete?.extraSession || defaultExtraSession(),
+  };
+  S.athlete = withSkills;
+  await saveKey("ultramonster:athlete", withSkills);
+  S.plan = generatePlan(withSkills.raceDate, toISO(new Date()));
+  const idx = S.plan.findIndex(w => new Date(w.startDate) <= new Date(getToday()) && addDays(new Date(w.startDate),6) >= new Date(getToday()));
+  S.weekIdx = idx >= 0 ? idx : 0;
+  render();
+}
+
+function setTab(id) { S.tab = id; render(); }
+function changeWeek(delta) { S.weekIdx = clamp(S.weekIdx + delta, 0, S.plan.length - 1); render(); }
+function toggleTech() { S.expandTech = !S.expandTech; render(); }
+
+function openSession(key) { S.activeSession = __registry[key]; render(); }
+function closeSession() { S.activeSession = null; render(); }
+
+async function saveLog() {
+  const session = S.activeSession;
+  if (!session) return;
+  const key = sessionKey(session);
+
+  const override = {
+    title: document.getElementById("ov-title").value,
+    duration: Number(document.getElementById("ov-duration").value) || 0,
+    intensity: document.getElementById("ov-intensity").value,
+    elevation: Number(document.getElementById("ov-elevation").value) || 0,
+    description: document.getElementById("ov-description").value,
+  };
+  S.overrides = { ...S.overrides, [key]: override };
+  await saveKey("ultramonster:overrides", S.overrides);
+
+  const data = {
+    completed: true,
+    actualDuration: Number(document.getElementById("log-duration").value) || 0,
+    actualDistance: Number(document.getElementById("log-distance").value) || 0,
+    avgHR: Number(document.getElementById("log-hr").value) || 0,
+    rpe: Number(document.getElementById("log-rpe").value) || 0,
+    elevationGain: Number(document.getElementById("log-elevation").value) || 0,
+    notes: document.getElementById("log-notes").value,
+    stravaLink: document.getElementById("log-strava").value,
+  };
+  S.logs = { ...S.logs, [key]: data };
+  await saveKey("ultramonster:logs", S.logs);
+
+  S.activeSession = null;
+  render();
+}
+
+function setSkillScore(id, val) {
+  const skills = S.athlete.skills || defaultSkills();
+  const next = { ...skills, assessed: true, run: { ...skills.run, [id]: val } };
+  createAthlete({ ...S.athlete, skills: next });
+}
+
+function toggleExtraEnabled() {
+  createAthlete({ ...S.athlete, extraSession: { ...S.athlete.extraSession, enabled: !S.athlete.extraSession?.enabled } });
+}
+function setExtraDay(id) {
+  createAthlete({ ...S.athlete, extraSession: { ...S.athlete.extraSession, day: id } });
+}
+function updateRaceDate(val) { createAthlete({ ...S.athlete, raceDate: val }); }
+function updateGoalKm(val) { createAthlete({ ...S.athlete, goalKm: val === "" ? null : Number(val) }); }
+function setWeight(w) { createAthlete({ ...S.athlete, weight: w }); }
+
+async function resetAll() {
+  S.athlete = null; S.plan = []; S.logs = {}; S.overrides = {};
+  await saveKey("ultramonster:athlete", null);
+  await saveKey("ultramonster:logs", null);
+  await saveKey("ultramonster:overrides", null);
+  render();
+}
+
+// ================= init =================
+(async function init() {
+  const a = await loadKey("ultramonster:athlete");
+  const l = await loadKey("ultramonster:logs");
+  const o = await loadKey("ultramonster:overrides");
+  if (o) S.overrides = o;
+  if (a) {
+    const merged = { ...a, skills: a.skills || defaultSkills(), extraSession: a.extraSession || defaultExtraSession() };
+    S.athlete = merged;
+    S.plan = generatePlan(merged.raceDate, toISO(new Date()));
+    const idx = S.plan.findIndex(w => new Date(w.startDate) <= new Date(getToday()) && addDays(new Date(w.startDate),6) >= new Date(getToday()));
+    S.weekIdx = idx >= 0 ? idx : 0;
+  }
+  if (l) S.logs = l;
+  S.loading = false;
+  render();
+})();
+</script>
+</body>
+</html>
