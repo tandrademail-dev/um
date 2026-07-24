@@ -24,6 +24,7 @@ const DAY_NAMES = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
 const DISCIPLINE_META = {
   rest:     { label: "Descanso",       icon: "moon",       color: "text-stone-500",  ring: "border-stone-700",   soft: "bg-stone-800/60" },
   run:      { label: "Corrida",        icon: "footprints", color: "text-rose-400",   ring: "border-rose-500/40", soft: "bg-rose-500/10" },
+  run2:     { label: "Corrida (2ª sessão)", icon: "footprints", color: "text-rose-300", ring: "border-rose-500/30", soft: "bg-rose-500/5" },
   strength: { label: "Força",          icon: "dumbbell",   color: "text-violet-400", ring: "border-violet-500/40", soft: "bg-violet-500/10" },
   night:    { label: "Simulação noturna", icon: "flashlight", color: "text-indigo-400", ring: "border-indigo-500/40", soft: "bg-indigo-500/10" },
   extra:    { label: "Extra técnico",   icon: "target",     color: "text-fuchsia-400", ring: "border-fuchsia-500/40", soft: "bg-fuchsia-500/10" },
@@ -32,7 +33,7 @@ const DISCIPLINE_META = {
 const PHASE_META = {
   Base:  { label: "Base",       desc: "Construir volume e resistência aeróbica" },
   Build: { label: "Construção", desc: "Longos progressivos + back-to-back" },
-  Peak:  { label: "Pico",       desc: "Simulação específica de 24h (incl. noite)" },
+  Peak:  { label: "Pico",       desc: "Volume máximo e simulação específica de 24h" },
   Taper: { label: "Afinação",   desc: "Reduzir volume, preservar pernas e sono" },
 };
 
@@ -238,8 +239,6 @@ const SUPPLEMENTS = [
 
 // ================= date helpers =================
 function toISO(d) {
-  // Usa componentes de data LOCAIS (não toISOString/UTC), para evitar que a data
-  // "salte" um dia em fusos horários como Portugal no horário de verão (UTC+1).
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
@@ -256,6 +255,13 @@ function lerp(a, b, t) { return a + (b - a) * t; }
 function esc(s){ return (s===undefined||s===null) ? "" : String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 
 // ================= plan generation =================
+// Estrutura de alto volume inspirada em como ultramaratonistas de 24h treinam de facto:
+// - regra 80/20 (a maioria do volume é fácil; só uma fatia pequena é a ritmo/limiar)
+// - progressão por TEMPO em pé, não por pace — o longo cresce em minutos, não em velocidade
+// - back-to-back todos os fins de semana (2º dia com pernas fatigadas é o estímulo mais específico)
+// - dias duplos (2 sessões no mesmo dia) na fase de Pico — mais volume total sem alongar
+//   demasiado uma única sessão, tal como muitos ultramaratonistas fazem para gerir fadiga
+// - força 2x/semana em vez de 1x — durabilidade importa tanto como o VO2
 function generatePlan(raceDateISO, todayISO) {
   const today = startOfWeek(new Date(todayISO));
   const race = new Date(raceDateISO + "T00:00:00");
@@ -265,8 +271,6 @@ function generatePlan(raceDateISO, todayISO) {
   const peakWeeks = Math.max(3, Math.round(totalWeeks * 0.25));
   const buildWeeksBase = Math.max(2, Math.round(totalWeeks * 0.15));
   const baseWeeksRaw = Math.max(4, totalWeeks - taperWeeks - peakWeeks - buildWeeksBase);
-  // Base encurtada ~18% face ao cálculo original — o tempo poupado passa para a Construção,
-  // que ganha mais peso relativo no plano.
   const baseWeeks = Math.max(4, Math.round(baseWeeksRaw * 0.82));
   const buildWeeks = buildWeeksBase + Math.max(0, baseWeeksRaw - baseWeeks);
 
@@ -293,41 +297,54 @@ function generatePlan(raceDateISO, todayISO) {
     const isTaper = w.phase === "Taper";
     const taperFactor = isTaper ? lerp(0.6, 0.15, w.phaseProgress) : 1;
     const isNightWeek = (w.phase === "Peak" || (w.phase === "Build" && w.phaseProgress > 0.5)) && (w.index % 3 === 0) && !isCutback && !isTaper;
+    // Dia duplo (2ª sessão no mesmo dia) só na fase de Pico, fora de semanas de recuperação —
+    // é como os ultramaratonistas ganham volume extra sem alongar excessivamente uma sessão só.
+    const isDoubleWeek = w.phase === "Peak" && !isCutback && !isTaper;
 
-    let longRun = clamp(lerp(50, 330, globalProgress), 50, 330);
-    let run2 = clamp(lerp(20, 120, globalProgress), 20, 120);
-    let qualityRun = clamp(lerp(30, 70, globalProgress), 30, 70);
-    let easyRun = clamp(lerp(30, 50, globalProgress), 30, 50);
+    // Volumes-alvo (minutos) — cap de Pico bem mais alto do que a versão anterior:
+    // longo até 7h, back-to-back até 3h, ritmo/limiar até 1h30, fácil até ~1h10.
+    let longRun = clamp(lerp(60, 420, globalProgress), 60, 420);
+    let run2 = clamp(lerp(25, 180, globalProgress), 25, 180);
+    let qualityRun = clamp(lerp(35, 90, globalProgress), 35, 90);
+    let easyRun = clamp(lerp(30, 70, globalProgress), 30, 70);
+    let doubleAM = clamp(lerp(0, 30, globalProgress), 0, 30);
 
-    if (isTaper) { longRun *= taperFactor/0.6; run2 *= taperFactor/0.6; qualityRun *= taperFactor/0.6 + 0.2; }
-    if (isCutback) { longRun *= 0.6; run2 *= 0.65; qualityRun *= 0.75; }
+    if (isTaper) { longRun *= taperFactor/0.6; run2 *= taperFactor/0.6; qualityRun *= taperFactor/0.6 + 0.2; doubleAM = 0; }
+    if (isCutback) { longRun *= 0.6; run2 *= 0.65; qualityRun *= 0.75; doubleAM = 0; }
 
-    const strength = w.phase === "Taper" ? 20 : 35;
-    const shakeout = 20;
+    const strengthMain = w.phase === "Taper" ? 20 : 35;
+    const strengthMini = w.phase === "Taper" ? 0 : 15;
+    const shakeout = w.phase === "Taper" ? 15 : 20;
 
     const weekStart = addDays(today, i * 7);
     const dateAt = (off) => toISO(addDays(weekStart, off));
 
+    const qualityDesc = w.phase === "Base"
+      ? "Fartlek leve, sem forçar — só para começar a acordar as pernas para ritmo mais rápido."
+      : w.phase === "Build"
+        ? "Blocos de tempo contínuo (ex: 3x10min Z3 com 3min de trote entre blocos)."
+        : "Séries de limiar mais longas (ex: 3x15min Z3 ou fartlek de terreno) — simula gestão de esforço já em fadiga acumulada.";
+
     const days = [
       { date: dateAt(0), discipline: "rest", title: "Descanso", duration: 0, intensity: "—", description: "Recuperação: mobilidade leve ou nada." },
-      { date: dateAt(1), discipline: "run", title: "Corrida fácil + economia", duration: Math.round(easyRun), intensity: "Z1-Z2", description: "Ritmo confortável, foco em cadência e postura." },
-      { date: dateAt(2), discipline: "strength", title: "Força + core", duration: Math.round(strength), intensity: "Moderado", description: "Excêntricos de perna, core, estabilidade de anca e tornozelo." },
-      { date: dateAt(3), discipline: "run", title: "Corrida com ritmo", duration: Math.round(qualityRun), intensity: "Z2-Z3", description: w.phase === "Base" ? "Fartlek leve, sem forçar." : "Blocos de tempo/limiar, simula gestão de esforço em fadiga." },
-      { date: dateAt(4), discipline: "run", title: "Shakeout + ativação", duration: shakeout, intensity: "Z1", description: "Corrida curta e leve para chegar fresco ao fim de semana." },
+      { date: dateAt(1), discipline: "run", title: "Corrida fácil + economia", duration: Math.round(easyRun), intensity: "Z1-Z2", description: "Ritmo confortável (80% do volume da semana deve ser assim), foco em cadência e postura." },
+      { date: dateAt(2), discipline: "strength", title: "Força + core", duration: Math.round(strengthMain), intensity: "Moderado", description: "Excêntricos de perna, core, estabilidade de anca e tornozelo." },
+      { date: dateAt(3), discipline: "run", title: "Corrida com ritmo", duration: Math.round(qualityRun), intensity: "Z2-Z3", description: qualityDesc },
+      isDoubleWeek && doubleAM >= 15
+        ? { date: dateAt(4), discipline: "run2", title: "Corrida dupla — manhã", duration: Math.round(doubleAM), intensity: "Z1", description: "2ª sessão do dia: fácil e curta, só para somar tempo em pé sem acrescentar fadiga a uma sessão só." }
+        : null,
+      { date: dateAt(4), discipline: strengthMini > 0 ? "strength" : "run", title: strengthMini > 0 ? "Prehab + mobilidade" : "Shakeout + ativação", duration: strengthMini > 0 ? strengthMini : shakeout, intensity: strengthMini > 0 ? "Leve" : "Z1", description: strengthMini > 0 ? "Sessão curta de prehab (tornozelo, anca, core) — mais frequência, menos volume por sessão." : "Corrida curta e leve para chegar fresco ao fim de semana." },
       isNightWeek
-        ? { date: dateAt(5), discipline: "night", title: "Longa noturna — simulação", duration: Math.round(Math.min(longRun,200)), intensity: "Z2 noturno", description: `Começa tarde (22h-23h) — simula a hora crítica da prova. Percurso na pista (${TRACK_LOOP_KM}km/volta) ajuda a treinar a monotonia do loop.` }
-        : { date: dateAt(5), discipline: "run", title: "Corrida longa", duration: Math.round(longRun), intensity: "Z2", description: PHASE_META[w.phase].desc },
-      { date: dateAt(6), discipline: "run", title: "Corrida longa — back-to-back", duration: Math.round(run2), intensity: "Z2", description: "Pernas já fatigadas do dia anterior — o mais específico do treino para uma 24h." },
-    ];
+        ? { date: dateAt(5), discipline: "night", title: "Longa noturna — simulação", duration: Math.round(Math.min(longRun,240)), intensity: "Z2 noturno", description: `Começa tarde (22h-23h) — simula a hora crítica da prova. Percurso na pista (${TRACK_LOOP_KM}km/volta) ajuda a treinar a monotonia do loop.` }
+        : { date: dateAt(5), discipline: "run", title: "Corrida longa", duration: Math.round(longRun), intensity: "Z2", description: "Prioriza TEMPO em pé, não velocidade — inclui períodos de marcha se for preciso para chegar ao alvo de duração. " + PHASE_META[w.phase].desc },
+      { date: dateAt(6), discipline: "run", title: "Corrida longa — back-to-back", duration: Math.round(run2), intensity: "Z2", description: "Pernas já fatigadas do dia anterior — o estímulo mais específico para uma 24h. Pratica aqui o rácio run/walk que vais usar na prova." },
+    ].filter(Boolean);
 
-    return { weekNumber: i+1, phase: w.phase, isCutback, isNightWeek, startDate: toISO(weekStart), days };
+    return { weekNumber: i+1, phase: w.phase, isCutback, isNightWeek, isDoubleWeek, startDate: toISO(weekStart), days };
   });
 }
 
 // ================= storage =================
-// Usa window.storage quando disponível (dentro do Claude), com fallback automático
-// para localStorage (quando a app é aberta como ficheiro standalone num browser).
-// Isto garante que os dados nunca se perdem ao sair/fechar a app.
 const __hasWindowStorage = typeof window !== "undefined" && !!window.storage;
 
 async function loadKey(key) {
@@ -365,15 +382,11 @@ let S = {
 let __registry = {};
 
 function sessionKey(s){ return s.date + "_" + s.discipline; }
-// Chave de override estável por dia — NÃO depende da disciplina, para que ao mudares
-// o tipo de dia (ex: descanso -> corrida) o override continue a ser encontrado.
-function overrideKeyFor(base){ return base.discipline === "extra" ? base.date + "_extra_slot" : base.date + "_slot"; }
+function overrideKeyFor(base){ return base.discipline === "extra" ? base.date + "_extra_slot" : base.date + "_" + base.discipline + "_slot"; }
 
-// Ajusta sessões futuras (ainda não registadas) com base no RPE recente registado —
-// esforço percebido alto reduz ligeiramente o volume seguinte, esforço baixo permite subir um pouco.
 function computeAdaptiveFactor(logs) {
   const entries = Object.entries(logs || {})
-    .filter(([k, v]) => v && v.completed && (k.endsWith("_run") || k.endsWith("_night") || k.endsWith("_strength")))
+    .filter(([k, v]) => v && v.completed && (k.endsWith("_run") || k.endsWith("_night") || k.endsWith("_strength") || k.endsWith("_run2")))
     .map(([k, v]) => ({ date: k.slice(0, 10), rpe: v.rpe }))
     .filter(e => e.rpe)
     .sort((a, b) => (a.date < b.date ? 1 : -1))
@@ -387,8 +400,6 @@ function computeAdaptiveFactor(logs) {
   return 1;
 }
 
-// Combina a sessão planeada com qualquer edição manual (override) guardada pelo utilizador;
-// se não houver override e a sessão ainda for futura, aplica o fator adaptativo ao volume.
 function effectiveSession(base) {
   const key = overrideKeyFor(base);
   const ov = S.overrides[key];
@@ -408,13 +419,12 @@ function getToday() { return toISO(new Date()); }
 function iconSpan(name, cls){ return `<i data-lucide="${name}" class="${cls||''}"></i>`; }
 
 function sessionCardHTML(session, log) {
-  const meta = DISCIPLINE_META[session.discipline];
+  const meta = DISCIPLINE_META[session.discipline] || DISCIPLINE_META.run;
   const done = log && log.completed;
   __registry[sessionKey(session)] = session;
   const key = sessionKey(session);
-  const openable = true;
   return `
-  <button ${openable ? `onclick="openSession('${esc(key)}')"` : "disabled"}
+  <button onclick="openSession('${esc(key)}')"
     class="w-full text-left rounded-xl border ${meta.ring} ${meta.soft} p-3.5 flex items-center gap-3 transition active:scale-[0.99]">
     ${iconSpan(meta.icon, `w-5 h-5 ${meta.color} shrink-0`)}
     <div class="flex-1 min-w-0">
@@ -583,7 +593,7 @@ function skillAssessmentHTML(athlete) {
 const DAY_TYPE_OPTIONS = ["rest", "run", "strength", "night"];
 
 function logFormHTML(session, existing) {
-  const meta = DISCIPLINE_META[session.discipline];
+  const meta = DISCIPLINE_META[session.discipline] || DISCIPLINE_META.run;
   const isRest = session.discipline === "rest";
   return `
   <div class="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4 overflow-y-auto">
@@ -656,8 +666,9 @@ function logFormHTML(session, existing) {
         <label class="text-xs text-stone-400 flex flex-col gap-1">Notas
           <textarea id="log-notes" rows="2" class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100 resize-none">${esc(existing?.notes ?? "")}</textarea></label>
         <label class="text-xs text-stone-400 flex flex-col gap-1">Link do Strava (opcional)
-          <input id="log-strava" type="url" value="${esc(existing?.stravaLink ?? "")}" placeholder="https://strava.com/activities/..."
+          <input id="log-strava" type="url" value="${esc(existing?.stravaLink ?? "")}" placeholder="https://www.strava.com/activities/..."
             class="bg-stone-800 border border-stone-700 rounded-lg px-3 py-2 text-stone-100"/></label>
+        <p class="text-stone-600 text-[11px]">Cola aqui o link público da atividade. Depois de guardares, leva esse mesmo link para a conversa com o Claude e pede uma análise — ele lê os dados da atividade e diz-te como ajustar a semana.</p>
       </div>
 
       <div class="flex gap-2 pt-1">
@@ -738,7 +749,7 @@ function computeWeeklyChartData() {
     const totals = { week: `S${w.weekNumber}`, corrida: 0, forca: 0 };
     w.days.forEach(d => {
       const eff = effectiveSession(d);
-      if (eff.discipline === "run" || eff.discipline === "night") totals.corrida += eff.duration/60;
+      if (eff.discipline === "run" || eff.discipline === "night" || eff.discipline === "run2") totals.corrida += eff.duration/60;
       if (eff.discipline === "strength") totals.forca += eff.duration/60;
     });
     return totals;
@@ -802,6 +813,8 @@ function render() {
     return total;
   })();
 
+  const weekTotalMinutes = effDays.reduce((sum,d) => sum + d.duration, 0);
+
   const completionRate = (() => {
     if (!week) return 0;
     const relevant = week.days.filter(d => d.discipline !== "rest");
@@ -827,7 +840,7 @@ function render() {
         <div>
           <div class="text-stone-200 font-medium">${PHASE_META[week?.phase || "Base"].label}</div>
           <div class="text-stone-500 text-sm">${PHASE_META[week?.phase || "Base"].desc}</div>
-          <div class="text-stone-600 text-xs mt-1">Semana ${week?.weekNumber} de ${S.plan.length}${week?.isCutback ? " · recuperação" : ""}${week?.isNightWeek ? " · semana noturna" : ""}</div>
+          <div class="text-stone-600 text-xs mt-1">Semana ${week?.weekNumber} de ${S.plan.length} · ${fmtMin(weekTotalMinutes)} previstas${week?.isCutback ? " · recuperação" : ""}${week?.isNightWeek ? " · noturna" : ""}${week?.isDoubleWeek ? " · dia duplo" : ""}</div>
         </div>
       </div>
       ${estimateCardHTML(estimate, athlete.goalKm, true)}
@@ -857,14 +870,14 @@ function render() {
         <button onclick="changeWeek(-1)" class="p-2 text-stone-400 disabled:opacity-30" ${S.weekIdx===0?"disabled":""}>${iconSpan("chevron-left","w-5 h-5")}</button>
         <div class="text-center">
           <div class="text-stone-100 font-semibold">Semana ${week.weekNumber}</div>
-          <div class="text-stone-500 text-xs">${fmtDate(week.startDate)} · ${PHASE_META[week.phase].label}${week.isCutback ? " · recuperação" : ""}${week.isNightWeek ? " · noturna" : ""}</div>
+          <div class="text-stone-500 text-xs">${fmtDate(week.startDate)} · ${PHASE_META[week.phase].label} · ${fmtMin(weekTotalMinutes)}${week.isCutback ? " · recuperação" : ""}${week.isNightWeek ? " · noturna" : ""}</div>
         </div>
         <button onclick="changeWeek(1)" class="p-2 text-stone-400 disabled:opacity-30" ${S.weekIdx===S.plan.length-1?"disabled":""}>${iconSpan("chevron-right","w-5 h-5")}</button>
       </div>
       <div class="space-y-2">
-        ${effDays.map((d,i) => `
+        ${effDays.map((d) => `
           <div>
-            <div class="text-stone-600 text-[10px] uppercase tracking-wide mb-1 pl-1">${DAY_NAMES[i]} · ${fmtDate(d.date)}</div>
+            <div class="text-stone-600 text-[10px] uppercase tracking-wide mb-1 pl-1">${DAY_NAMES[new Date(d.date+"T00:00:00").getDay() === 0 ? 6 : new Date(d.date+"T00:00:00").getDay()-1]} · ${fmtDate(d.date)}</div>
             ${sessionCardHTML(d, logs[`${d.date}_${d.discipline}`])}
             ${(extraSession && extraSession.date === d.date) ? `<div class="mt-2">${sessionCardHTML(extraSession, logs[`${extraSession.date}_extra`])}</div>` : ""}
           </div>`).join("")}
@@ -937,6 +950,12 @@ function render() {
         <label class="text-xs text-stone-400 flex flex-col gap-1 max-w-[10rem]">Peso (kg)
           <input type="number" value="${athlete.weight || ""}" placeholder="Ex: 72" onchange="setWeight(Number(this.value)||null)" class="bg-stone-900 border border-stone-700 rounded-lg px-3 py-2.5 text-stone-100"/></label>
         <p class="text-stone-600 text-[11px] mt-1">Usado apenas para calcular alvos de nutrição personalizados (g de carboidratos/proteína).</p>
+      </div>
+      <div class="border-t border-stone-800 pt-5">
+        <h2 class="text-stone-200 font-semibold mb-1">Strava</h2>
+        <label class="text-xs text-stone-400 flex flex-col gap-1">Link do teu perfil Strava
+          <input type="url" value="${esc(athlete.stravaProfile || "")}" placeholder="https://www.strava.com/athletes/..." onchange="setStravaProfile(this.value)" class="bg-stone-900 border border-stone-700 rounded-lg px-3 py-2.5 text-stone-100"/></label>
+        <p class="text-stone-600 text-[11px] mt-2 leading-relaxed">Esta app corre no teu browser e não tem acesso automático à tua conta Strava — não é possível fazer login ou puxar dados sozinha, ainda que definas o link aqui. O que funciona hoje: cola o link de cada atividade no registo do treino (separador de cada sessão) e depois traz esse link para a conversa com o Claude — ele lê os dados públicos da atividade, analisa-os a fundo e diz-te como ajustar a semana seguinte.</p>
       </div>
       <div class="border-t border-stone-800 pt-5">
         <h2 class="text-stone-200 font-semibold mb-1">Avaliação técnica</h2>
@@ -1050,7 +1069,6 @@ function toggleTech() { S.expandTech = !S.expandTech; render(); }
 function openSession(key) { S.activeSession = __registry[key]; render(); }
 function closeSession() { S.activeSession = null; render(); }
 
-// Muda o tipo de dia (ex: descanso -> corrida) dentro do formulário aberto, sem guardar ainda.
 function setActiveDiscipline(disciplineId) {
   if (!S.activeSession) return;
   const m = DISCIPLINE_META[disciplineId];
@@ -1077,14 +1095,12 @@ async function saveLog() {
   const logKey = session.date + "_" + discipline;
 
   if (discipline === "rest") {
-    // Volta a marcar o dia como descanso: guarda o override e limpa qualquer treino
-    // registado noutras disciplinas para a mesma data (evita registos "fantasma").
     const override = { discipline: "rest", title: "Descanso", duration: 0, intensity: "—", elevation: 0, description: "Recuperação: mobilidade leve ou nada." };
     S.overrides = { ...S.overrides, [overrideKey]: override };
     await saveKey("ultramonster:overrides", S.overrides);
 
     const nextLogs = { ...S.logs };
-    ["run", "strength", "night"].forEach(d => { delete nextLogs[session.date + "_" + d]; });
+    ["run", "strength", "night", "run2"].forEach(d => { delete nextLogs[session.date + "_" + d]; });
     S.logs = nextLogs;
     await saveKey("ultramonster:logs", S.logs);
 
@@ -1136,6 +1152,7 @@ function setExtraDay(id) {
 function updateRaceDate(val) { createAthlete({ ...S.athlete, raceDate: val }); }
 function updateGoalKm(val) { createAthlete({ ...S.athlete, goalKm: val === "" ? null : Number(val) }); }
 function setWeight(w) { createAthlete({ ...S.athlete, weight: w }); }
+function setStravaProfile(url) { createAthlete({ ...S.athlete, stravaProfile: url }); }
 
 async function resetAll() {
   S.athlete = null; S.plan = []; S.logs = {}; S.overrides = {};
