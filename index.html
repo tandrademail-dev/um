@@ -309,15 +309,14 @@ function generatePlan(raceDateISO, todayISO) {
     const isDoubleWeek = (w.phase === "Peak" || (w.phase === "Build" && w.phaseProgress > 0.7)) && !isCutback && !isTaper;
 
     // Volumes-alvo (minutos) — tetos ainda mais altos, já que a Construção começa na semana 3:
-    // longo até 7h30, back-to-back até 3h20, ritmo/limiar até 1h40, fácil até ~1h15.
+    // longo até 7h30, back-to-back até 3h20, fácil até ~1h15.
     let longRun = clamp(lerp(70, 450, globalProgress), 70, 450);
     let run2 = clamp(lerp(30, 200, globalProgress), 30, 200);
-    let qualityRun = clamp(lerp(40, 100, globalProgress), 40, 100);
     let easyRun = clamp(lerp(35, 75, globalProgress), 35, 75);
     let doubleAM = clamp(lerp(0, 35, globalProgress), 0, 35);
 
-    if (isTaper) { longRun *= taperFactor/0.6; run2 *= taperFactor/0.6; qualityRun *= taperFactor/0.6 + 0.2; doubleAM = 0; }
-    if (isCutback) { longRun *= 0.6; run2 *= 0.65; qualityRun *= 0.75; doubleAM = 0; }
+    if (isTaper) { longRun *= taperFactor/0.6; run2 *= taperFactor/0.6; doubleAM = 0; }
+    if (isCutback) { longRun *= 0.6; run2 *= 0.65; doubleAM = 0; }
 
     const strengthMain = w.phase === "Taper" ? 20 : 40;
     const strengthMini = w.phase === "Taper" ? 0 : 18;
@@ -326,17 +325,34 @@ function generatePlan(raceDateISO, todayISO) {
     const weekStart = addDays(today, i * 7);
     const dateAt = (off) => toISO(addDays(weekStart, off));
 
-    const qualityDesc = w.phase === "Base"
-      ? "Fartlek leve, sem forçar — só para começar a acordar as pernas para ritmo mais rápido."
-      : w.phase === "Build"
-        ? "Blocos de tempo contínuo (ex: 3x10min Z3 com 3min de trote entre blocos)."
-        : "Séries de limiar mais longas (ex: 3x15min Z3 ou fartlek de terreno) — simula gestão de esforço já em fadiga acumulada.";
+    // VO2max — protocolo norueguês 4x4, todas as semanas (Base/Construção/Pico e também
+    // semanas de recuperação), porque é um estímulo curto e eficiente que sobe o teto
+    // aeróbico sem acrescentar volume — o que baixa o %VO2max exigido no ritmo de prova.
+    // Só se reduz nas semanas de recuperação (menos uma série) e desaparece na 2ª metade
+    // da Afinação, quando a prioridade passa a ser chegar fresco, não ganhar mais fitness.
+    let vo2Session;
+    if (isTaper && w.phaseProgress >= 0.5) {
+      const d = Math.round(clamp(lerp(30, 20, w.phaseProgress), 20, 30));
+      vo2Session = {
+        title: "Corrida fácil + ativações", duration: d, intensity: "Z1-Z2",
+        description: "Sem VO2max esta semana — tão perto da prova a prioridade é chegar fresco, não ganhar mais fitness. Inclui 4-6 strides curtas de 15-20seg para manter a perna viva.",
+      };
+    } else {
+      const sets = isCutback ? 3 : 4;
+      const warmup = 15, work = sets * 4, rec = (sets - 1) * 3, cooldown = 10;
+      vo2Session = {
+        title: `VO2max — ${sets}x4 (protocolo norueguês)`,
+        duration: warmup + work + rec + cooldown,
+        intensity: "Z4-Z5 (VO2max)",
+        description: `Aquecimento ${warmup}min fácil → ${sets}x4min quase ao ritmo máximo que aguentas sustentar 4min (Z4-Z5, ~90-95% FCmáx) com 3min de trote de recuperação entre séries → ${cooldown}min de arrefecimento.${isCutback ? " Semana de recuperação: uma série a menos, mesma intensidade." : ""}`,
+      };
+    }
 
     const days = [
       { date: dateAt(0), discipline: "rest", title: "Descanso", duration: 0, intensity: "—", description: "Recuperação: mobilidade leve ou nada." },
       { date: dateAt(1), discipline: "run", title: "Corrida fácil + economia", duration: Math.round(easyRun), intensity: "Z1-Z2", description: "Ritmo confortável (80% do volume da semana deve ser assim), foco em cadência e postura." },
       { date: dateAt(2), discipline: "strength", title: "Força + core", duration: Math.round(strengthMain), intensity: "Moderado", description: "Excêntricos de perna, core, estabilidade de anca e tornozelo." },
-      { date: dateAt(3), discipline: "run", title: "Corrida com ritmo", duration: Math.round(qualityRun), intensity: "Z2-Z3", description: qualityDesc },
+      { date: dateAt(3), discipline: "run", title: vo2Session.title, duration: vo2Session.duration, intensity: vo2Session.intensity, description: vo2Session.description },
       isDoubleWeek && doubleAM >= 15
         ? { date: dateAt(4), discipline: "run2", title: "Corrida dupla — manhã", duration: Math.round(doubleAM), intensity: "Z1", description: "2ª sessão do dia: fácil e curta, só para somar tempo em pé sem acrescentar fadiga a uma sessão só." }
         : null,
