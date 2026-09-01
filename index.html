@@ -269,20 +269,22 @@ function esc(s){ return (s===undefined||s===null) ? "" : String(s).replace(/&/g,
 // - dias duplos (2 sessões no mesmo dia) na fase de Pico — mais volume total sem alongar
 //   demasiado uma única sessão, tal como muitos ultramaratonistas fazem para gerir fadiga
 // - força 2x/semana em vez de 1x — durabilidade importa tanto como o VO2
-function generatePlan(raceDateISO, todayISO) {
-  const today = startOfWeek(new Date(todayISO));
+function generatePlan(raceDateISO, planStartISO) {
+  // planStartISO é uma data FIXA (gravada uma única vez na criação do atleta) — nunca "hoje".
+  // Recalcular a partir de "hoje" a cada carregamento fazia a semana 1 saltar sempre para a
+  // semana atual, dando a sensação de que o plano reiniciava. Agora o plano é sempre o mesmo
+  // array de semanas; o que muda entre carregamentos é só qual delas é "a semana atual".
+  const planStart = startOfWeek(new Date(planStartISO));
   const race = new Date(raceDateISO + "T00:00:00");
-  const totalWeeks = Math.max(10, diffWeeks(today, race));
+  const totalWeeks = Math.max(10, diffWeeks(planStart, race));
 
   const taperWeeks = clamp(Math.round(totalWeeks * 0.08), 2, 3);
   const peakWeeks = Math.max(3, Math.round(totalWeeks * 0.25));
-  // Base reduzida ao mínimo: só 2 semanas de adaptação inicial — a partir da semana 3
-  // entra-se logo em Construção, com intensidade e volume mais altos desde cedo.
-  const baseWeeks = 2;
-  const buildWeeks = Math.max(2, totalWeeks - taperWeeks - peakWeeks - baseWeeks);
+  // Sem semanas de Base — entra-se logo em Construção desde a semana 1, com intensidade
+  // e volume mais altos desde o início.
+  const buildWeeks = Math.max(2, totalWeeks - taperWeeks - peakWeeks);
 
   const boundaries = [
-    { phase: "Base", weeks: baseWeeks },
     { phase: "Build", weeks: buildWeeks },
     { phase: "Peak", weeks: peakWeeks },
     { phase: "Taper", weeks: taperWeeks },
@@ -310,19 +312,19 @@ function generatePlan(raceDateISO, todayISO) {
 
     // Volumes-alvo (minutos) — tetos ainda mais altos, já que a Construção começa na semana 3:
     // longo até 7h30, back-to-back até 3h20, fácil até ~1h15.
-    let longRun = clamp(lerp(70, 450, globalProgress), 70, 450);
-    let run2 = clamp(lerp(30, 200, globalProgress), 30, 200);
-    let easyRun = clamp(lerp(35, 75, globalProgress), 35, 75);
-    let doubleAM = clamp(lerp(0, 35, globalProgress), 0, 35);
+    let longRun = clamp(lerp(90, 480, globalProgress), 90, 480);
+    let run2 = clamp(lerp(40, 220, globalProgress), 40, 220);
+    let easyRun = clamp(lerp(40, 80, globalProgress), 40, 80);
+    let doubleAM = clamp(lerp(0, 40, globalProgress), 0, 40);
 
     if (isTaper) { longRun *= taperFactor/0.6; run2 *= taperFactor/0.6; doubleAM = 0; }
     if (isCutback) { longRun *= 0.6; run2 *= 0.65; doubleAM = 0; }
 
-    const strengthMain = w.phase === "Taper" ? 20 : 40;
-    const strengthMini = w.phase === "Taper" ? 0 : 18;
+    const strengthMain = w.phase === "Taper" ? 20 : 45;
+    const strengthMini = w.phase === "Taper" ? 0 : 20;
     const shakeout = w.phase === "Taper" ? 15 : 20;
 
-    const weekStart = addDays(today, i * 7);
+    const weekStart = addDays(planStart, i * 7);
     const dateAt = (off) => toISO(addDays(weekStart, off));
 
     // VO2max — protocolo norueguês 4x4, todas as semanas (Base/Construção/Pico e também
@@ -338,7 +340,7 @@ function generatePlan(raceDateISO, todayISO) {
         description: "Sem VO2max esta semana — tão perto da prova a prioridade é chegar fresco, não ganhar mais fitness. Inclui 4-6 strides curtas de 15-20seg para manter a perna viva.",
       };
     } else {
-      const sets = isCutback ? 3 : 4;
+      const sets = isCutback ? (w.phase === "Peak" ? 4 : 3) : (w.phase === "Peak" ? 5 : 4);
       const warmup = 15, work = sets * 4, rec = (sets - 1) * 3, cooldown = 10;
       vo2Session = {
         title: `VO2max — ${sets}x4 (protocolo norueguês)`,
@@ -1088,10 +1090,13 @@ async function createAthlete(a) {
     goalKm: (a.goalKm === "" || a.goalKm === undefined) ? (S.athlete?.goalKm ?? null) : Number(a.goalKm),
     skills: a.skills || S.athlete?.skills || defaultSkills(),
     extraSession: a.extraSession || S.athlete?.extraSession || defaultExtraSession(),
+    // Data de início do plano: fixa-se uma única vez (na criação) e nunca mais muda sozinha,
+    // para a semana 1 não "saltar" para a semana atual sempre que algo é editado.
+    planStartDate: a.planStartDate || S.athlete?.planStartDate || toISO(startOfWeek(new Date())),
   };
   S.athlete = withSkills;
   await saveKey("ultramonster:athlete", withSkills);
-  S.plan = generatePlan(withSkills.raceDate, toISO(new Date()));
+  S.plan = generatePlan(withSkills.raceDate, withSkills.planStartDate);
   const idx = S.plan.findIndex(w => new Date(w.startDate) <= new Date(getToday()) && addDays(new Date(w.startDate),6) >= new Date(getToday()));
   S.weekIdx = idx >= 0 ? idx : 0;
   render();
@@ -1211,13 +1216,18 @@ async function importDataFile(input) {
     const text = await file.text();
     const payload = JSON.parse(text);
     if (payload.athlete) {
-      S.athlete = { ...payload.athlete, skills: payload.athlete.skills || defaultSkills(), extraSession: payload.athlete.extraSession || defaultExtraSession() };
+      S.athlete = {
+        ...payload.athlete,
+        skills: payload.athlete.skills || defaultSkills(),
+        extraSession: payload.athlete.extraSession || defaultExtraSession(),
+        planStartDate: payload.athlete.planStartDate || toISO(startOfWeek(new Date())),
+      };
       await saveKey("ultramonster:athlete", S.athlete);
     }
     if (payload.logs) { S.logs = payload.logs; await saveKey("ultramonster:logs", S.logs); }
     if (payload.overrides) { S.overrides = payload.overrides; await saveKey("ultramonster:overrides", S.overrides); }
     if (S.athlete) {
-      S.plan = generatePlan(S.athlete.raceDate, toISO(new Date()));
+      S.plan = generatePlan(S.athlete.raceDate, S.athlete.planStartDate);
       const idx = S.plan.findIndex(w => new Date(w.startDate) <= new Date(getToday()) && addDays(new Date(w.startDate),6) >= new Date(getToday()));
       S.weekIdx = idx >= 0 ? idx : 0;
     }
@@ -1247,9 +1257,13 @@ async function resetAll() {
   const o = await loadKey("ultramonster:overrides");
   if (o) S.overrides = o;
   if (a) {
-    const merged = { ...a, skills: a.skills || defaultSkills(), extraSession: a.extraSession || defaultExtraSession() };
+    // Compatibilidade com dados guardados antes desta correção: se não existir ainda uma
+    // data de início fixa, adota "hoje" uma única vez e grava-a, para nunca mais mudar sozinha.
+    const planStartDate = a.planStartDate || toISO(startOfWeek(new Date()));
+    const merged = { ...a, skills: a.skills || defaultSkills(), extraSession: a.extraSession || defaultExtraSession(), planStartDate };
     S.athlete = merged;
-    S.plan = generatePlan(merged.raceDate, toISO(new Date()));
+    if (!a.planStartDate) { await saveKey("ultramonster:athlete", merged); }
+    S.plan = generatePlan(merged.raceDate, merged.planStartDate);
     const idx = S.plan.findIndex(w => new Date(w.startDate) <= new Date(getToday()) && addDays(new Date(w.startDate),6) >= new Date(getToday()));
     S.weekIdx = idx >= 0 ? idx : 0;
   }
