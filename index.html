@@ -973,6 +973,11 @@ function render() {
           </label>
         </div>
       </div>
+      <div class="bg-stone-900/60 border border-stone-800 rounded-2xl p-4 space-y-2">
+        <h2 class="text-stone-200 font-semibold text-sm">Historial de treino</h2>
+        <p class="text-stone-500 text-xs leading-relaxed">A semana 1 do plano está ancorada em <span class="text-stone-300 font-mono">${fmtDate(athlete.planStartDate)}</span>. Se tiveres treinos registados antes dessa data (ex: depois de importares um backup mais antigo), usa isto para recuar a semana 1 e cobrir todo o histórico real.</p>
+        <button onclick="recoverHistory(false)" class="w-full rounded-lg py-2.5 text-sm font-medium bg-stone-800 border border-stone-700 text-stone-200">${iconSpan("history","w-4 h-4 inline mr-1")}Recuperar histórico completo</button>
+      </div>
       <div>
         <label class="text-xs text-stone-400 flex flex-col gap-1">Data da prova
           <input type="date" value="${esc(athlete.raceDate)}" onchange="updateRaceDate(this.value)" class="bg-stone-900 border border-stone-700 rounded-lg px-3 py-2.5 text-stone-100"/></label>
@@ -1250,12 +1255,42 @@ async function resetAll() {
   render();
 }
 
+// Encontra a data mais antiga entre os treinos já registados — usada para recuperar o
+// histórico real quando a data de início do plano ficou definida tarde demais (ex: por causa
+// do bug antigo que reiniciava a semana 1 a cada carregamento).
+function findEarliestLogDate() {
+  let earliest = null;
+  Object.entries(S.logs || {}).forEach(([key, log]) => {
+    if (!log || !log.completed) return;
+    const dateStr = key.slice(0, 10);
+    if (!earliest || dateStr < earliest) earliest = dateStr;
+  });
+  return earliest;
+}
+
+async function recoverHistory(silent) {
+  const earliest = findEarliestLogDate();
+  if (!earliest || !S.athlete) { if (!silent) alert("Ainda não há treinos registados para recuperar."); return; }
+  const newStart = toISO(startOfWeek(new Date(earliest + "T00:00:00")));
+  if (newStart >= S.athlete.planStartDate) {
+    if (!silent) alert("O teu histórico já está coberto pela semana 1 atual — não há nada para recuperar.");
+    return;
+  }
+  S.athlete = { ...S.athlete, planStartDate: newStart };
+  await saveKey("ultramonster:athlete", S.athlete);
+  S.plan = generatePlan(S.athlete.raceDate, S.athlete.planStartDate);
+  const idx = S.plan.findIndex(w => new Date(w.startDate) <= new Date(getToday()) && addDays(new Date(w.startDate),6) >= new Date(getToday()));
+  S.weekIdx = idx >= 0 ? idx : 0;
+  if (!silent) { render(); alert(`Histórico recuperado — a semana 1 passa a começar em ${fmtDate(newStart)}, cobrindo todos os treinos que já tinhas registado.`); }
+}
+
 // ================= init =================
 (async function init() {
   const a = await loadKey("ultramonster:athlete");
   const l = await loadKey("ultramonster:logs");
   const o = await loadKey("ultramonster:overrides");
   if (o) S.overrides = o;
+  if (l) S.logs = l;
   if (a) {
     // Compatibilidade com dados guardados antes desta correção: se não existir ainda uma
     // data de início fixa, adota "hoje" uma única vez e grava-a, para nunca mais mudar sozinha.
@@ -1264,10 +1299,12 @@ async function resetAll() {
     S.athlete = merged;
     if (!a.planStartDate) { await saveKey("ultramonster:athlete", merged); }
     S.plan = generatePlan(merged.raceDate, merged.planStartDate);
+    // Recuperação automática (uma vez): se houver treinos registados antes do início atual
+    // do plano, a semana 1 recua para cobrir todo o histórico real de treino.
+    await recoverHistory(true);
     const idx = S.plan.findIndex(w => new Date(w.startDate) <= new Date(getToday()) && addDays(new Date(w.startDate),6) >= new Date(getToday()));
     S.weekIdx = idx >= 0 ? idx : 0;
   }
-  if (l) S.logs = l;
   S.loading = false;
   render();
 })();
